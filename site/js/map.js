@@ -1,5 +1,5 @@
 // The map: neighborhood outlines, one circle per hundred-block (sized by reports, colored by the
-// most serious one), an optional density view, and unverified chatter pins.
+// most serious one), an optional density view, and unverified chatter pins and police-call dots.
 // MapLibre GL comes from a <script> tag in index.html; the basemap is CARTO's free Dark Matter style.
 
 const BASEMAP = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
@@ -80,15 +80,19 @@ export function createMap(container, { beats, sevColors, chatterColor, onBeat, o
         },
       }, under);
 
+      // Unverified items: a wide ring for a news or Reddit post, a small solid dot for a police call
+      // (there are many more of those, and each sits on the same point as its block's circle).
+      const call = ['boolean', ['get', 'dispatch'], false];
       map.addSource('chatter', { type: 'geojson', data: EMPTY });
       map.addLayer({
         id: 'chatter', type: 'circle', source: 'chatter',
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 11, 6, 14, 13, 17, 26],
+          'circle-radius': ['interpolate', ['linear'], ['zoom'],
+            11, ['case', call, 1.5, 6], 14, ['case', call, 3.5, 13], 17, ['case', call, 7, 26]],
           'circle-color': chatterColor,
-          'circle-opacity': 0.2,
-          'circle-stroke-color': chatterColor,
-          'circle-stroke-width': 1.5,
+          'circle-opacity': ['case', call, 1, 0.2],
+          'circle-stroke-color': ['case', call, '#0d0d0d', chatterColor],
+          'circle-stroke-width': ['case', call, 1, 1.5],
         },
       }, under);
 

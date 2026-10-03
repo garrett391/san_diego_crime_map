@@ -10,6 +10,8 @@ Steps, each a function below:
   load_beats      SDPD beat polygons (one beat = one neighborhood)
   assign_beats    decide which neighborhood each offense belongs to
   export          write meta.json, city.json, beats.geojson and one file per neighborhood
+
+The unofficial layers are added last: chatter.json (chatter.py) and dispatch.json (dispatch.py).
 """
 from __future__ import annotations
 
@@ -481,6 +483,8 @@ def build(data_dir: Path = config.DATA_DIR, out_dir: Path = config.OUT_DIR,
     if chatter_store is not None:
         from .chatter import export as export_chatter
         export_chatter(chatter_store, tmp)
+    from .dispatch import export as export_dispatch
+    dispatch = export_dispatch(data_dir, tmp, home_beat)
 
     shutil.rmtree(out_dir, ignore_errors=True)
     tmp.rename(out_dir)
@@ -494,5 +498,9 @@ def build(data_dir: Path = config.DATA_DIR, out_dir: Path = config.OUT_DIR,
     if qa["unknown_codes"]:
         print(f"  note: offense codes not in categories.py (treated as low / public order): {qa['unknown_codes']}")
     print(f"  {home['name']}: {home['n']:,} offenses since {first_day}")
+    if dispatch:
+        print(f"  dispatch: {len(dispatch['calls']):,} of {dispatch['logged']:,} police calls there in the {dispatch['days']} days "
+              f"to {dispatch['through']} were about a possible crime; "
+              f"{sum(c['x'] is not None for c in dispatch['calls']):,} placed on the map")
     print(f"  wrote {out_dir} ({hood_bytes / 1e6:.1f} MB of neighborhood files) in {time.monotonic() - started:.1f}s")
     return meta

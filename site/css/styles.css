@@ -204,6 +204,7 @@ tr.clickable:hover td { background: var(--wash); }
 .map-legend .row span:not(.swatch):not(.ring) { margin-right: 6px; }
 .map-hover { top: 10px; pointer-events: none; }
 .ring { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--chatter); background: rgba(217, 89, 38, 0.2); flex: none; }
+.ring.dot { width: 8px; height: 8px; margin: 0 2px; border: 0; background: var(--chatter); }   /* a police call */
 .maplibregl-popup-content { background: #262624; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font: inherit; font-size: 13px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); }
 .maplibregl-popup-anchor-top .maplibregl-popup-tip, .maplibregl-popup-anchor-top-left .maplibregl-popup-tip, .maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: #262624; }
 .maplibregl-popup-anchor-bottom .maplibregl-popup-tip, .maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip, .maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: #262624; }
@@ -215,6 +216,8 @@ tr.clickable:hover td { background: var(--wash); }
 .pop-list { max-height: 220px; overflow-y: auto; display: grid; gap: 6px; }
 .pop-item { display: grid; grid-template-columns: auto 1fr; gap: 0 8px; align-items: baseline; }
 .pop-item .swatch { margin-top: 4px; }
+.pop-more { margin-top: 10px; }
+.pop-list.short { max-height: 110px; }
 .pop-date { color: var(--muted); font-size: 12px; }
 .pop-code { grid-column: 2; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .offense { display: inline-flex; align-items: baseline; gap: 7px; }
@@ -222,11 +225,15 @@ tr.clickable:hover td { background: var(--wash); }
 
 /* ---- chatter ---- */
 .feed { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; }
-.feed li { padding: 10px 0; border-bottom: 1px solid var(--grid); min-width: 0; }
+.feed > li { padding: 10px 0; border-bottom: 1px solid var(--grid); min-width: 0; }
 .feed-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; color: var(--muted); font-size: 12px; }
 .tag { border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; color: var(--text-2); font-size: 11px; }
 .feed-title { display: block; margin: 3px 0; font-weight: 500; overflow-wrap: anywhere; }
 .feed-excerpt { color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+.calls { display: grid; gap: 3px; color: var(--text-2); font-size: 13px; }
+.calls li { display: grid; grid-template-columns: 4.6em minmax(0, 1fr); gap: 8px; }
+.call-time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.call-outcome { color: var(--muted); }
 #chatter-more { margin-top: 12px; }
 #chatter-filter { margin-bottom: 4px; }
 

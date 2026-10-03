@@ -11,7 +11,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m pipeline", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("fetch", help="download the official SDPD files into ./data")
+    p = sub.add_parser("fetch", help="download the official SDPD files (offenses, dispatch log) into ./data")
     p.add_argument("--years", type=int, nargs="+", help="only these years (default: all since 2020)")
     p.add_argument("--force", action="store_true", help="download even if the local copy looks current")
 
@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("chatter", help="collect news and Reddit posts about the home neighborhood")
     p.add_argument("--offline", action="store_true", help="re-score what is already stored, fetch nothing")
-    p.add_argument("--backfill", action="store_true", help="also search news for every half-year since 2020 (run once)")
+    p.add_argument("--backfill", action="store_true", help="also search Google News for every half-year since 2020 (run once)")
 
     p = sub.add_parser("serve", help="open the dashboard at http://localhost:8000")
     p.add_argument("--port", type=int, default=8000)

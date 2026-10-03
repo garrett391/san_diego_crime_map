@@ -18,6 +18,12 @@ export function date(d, { year = true } = {}) {
   return year ? `${text}, ${d.getUTCFullYear()}` : text;
 }
 
+/** "17:05" -> "5:05 pm" */
+export function clock(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'am' : 'pm'}`;
+}
+
 export function month(year, monthIndex, { long = false } = {}) {
   return `${(long ? MONTHS_LONG : MONTHS)[monthIndex]} ${year}`;
 }

@@ -2,7 +2,11 @@
 
 Sources (no API keys):
   * Google News RSS search
+  * local outlets' own RSS feeds, config.CHATTER_FEEDS
   * Reddit RSS search, one request per subreddit in config.CHATTER_SUBREDDITS
+
+Police dispatch calls, the third kind of chatter on the dashboard, come from the city's files
+rather than a feed; see dispatch.py.
 
 Everything fetched is appended to a small JSONL store (config.CHATTER_STORE) so items survive after
 they drop out of the feeds. Scoring, grouping and locating happen at export time from the stored
@@ -146,15 +150,14 @@ def is_local_subreddit(name: str, places: list[str]) -> bool:
 
 
 def is_relevant(item: dict, places: list[str]) -> bool:
-    points, _ = score(item["title"], item.get("text", ""))
-    if points < MIN_SCORE:
-        return False
+    title, text = item["title"], item.get("text", "")
     if item["source"] == "news":
-        # Only the headline is available, so the neighborhood has to be named in it.
-        return mentions_place(item["title"], places)
-    if item.get("local"):
-        return True
-    return mentions_place(item["title"] + " " + item.get("text", ""), places)
+        # A crime story says so in its headline. The neighborhood may be named only in the summary,
+        # which an outlet's own feed carries and Google News does not.
+        return score(title)[0] >= MIN_SCORE and mentions_place(title + " " + text, places)
+    if score(title, text)[0] < MIN_SCORE:
+        return False
+    return bool(item.get("local")) or mentions_place(title + " " + text, places)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -189,6 +192,47 @@ def parse_news(xml: bytes) -> list[dict]:
             continue
         items.append({"id": "news:" + guid, "source": "news", "outlet": outlet, "title": title,
                       "url": node.findtext("link") or "", "published": published.isoformat(), "text": ""})
+    return items
+
+
+def _when(stamp: str | None) -> datetime | None:
+    """A feed's timestamp, in UTC. Feeds use RFC 822 or ISO 8601; NBC stations write local time
+    with AM/PM and no zone ('Thu, Oct 01 2026 03:49:34 PM'), which has to be tried first because
+    the RFC 822 parser accepts it and quietly drops the PM."""
+    stamp = (stamp or "").strip()
+    try:
+        local = datetime.strptime(stamp, "%a, %b %d %Y %I:%M:%S %p")
+        return (local + _pacific_offset(local.date())).replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    for parse in (parsedate_to_datetime, datetime.fromisoformat):
+        try:
+            when = parse(stamp)
+        except (TypeError, ValueError):
+            continue
+        return (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    return None
+
+
+def parse_feed(xml: bytes, outlet: str) -> list[dict]:
+    """An outlet's own RSS or Atom feed. Unlike Google News, these carry a summary of the article."""
+    items = []
+    for node in ET.fromstring(xml).iter():
+        if node.tag.rsplit("}", 1)[-1] not in ("item", "entry"):
+            continue
+        field: dict[str, str] = {}
+        for child in node:                           # first non-empty value per tag, namespaces ignored
+            value = (child.text or "").strip() or child.get("href") or ""
+            if value:
+                field.setdefault(child.tag.rsplit("}", 1)[-1], value)
+        title, link = clean_text(field.get("title", "")), field.get("link", "")
+        published = _when(field.get("pubDate") or field.get("published") or field.get("updated") or field.get("date"))
+        if not (title and link and published):
+            continue
+        summary = field.get("description") or field.get("summary") or field.get("encoded") or field.get("content") or ""
+        items.append({"id": f"feed:{outlet}:{field.get('guid') or field.get('id') or link}", "source": "news",
+                      "outlet": outlet, "title": title, "url": link, "published": published.isoformat(),
+                      "text": clean_text(summary)[:STORED_TEXT]})
     return items
 
 
@@ -239,6 +283,23 @@ def fetch_news(places: list[str], backfill_from: int | None = None) -> list[dict
                 items += _news_search(f'intitle:"{place}" "San Diego" ({NEWS_TERMS}) '
                                       f"after:{start.isoformat()} before:{end.isoformat()}")
                 start = end
+    return list({i["id"]: i for i in items}.values())
+
+
+def fetch_feeds(feeds: list[tuple[str, str]], places: list[str], log=print) -> list[dict]:
+    """Each outlet's own feed. These list every recent article, so only the ones that name the
+    neighborhood are kept (the searches above ask for that up front). A feed that is down or
+    malformed is skipped."""
+    items = []
+    for outlet, url in feeds:
+        try:
+            found = parse_feed(_get(url)[0], outlet)
+        except (urllib.error.URLError, ET.ParseError, TimeoutError) as e:
+            log(f"    {outlet}: skipped ({e})")
+            continue
+        named = [i for i in found if mentions_place(i["title"] + " " + i["text"], places)]
+        log(f"    {outlet}: {len(named)} of {len(found)} articles name the neighborhood")
+        items += named
     return list({i["id"]: i for i in items}.values())
 
 
@@ -352,24 +413,37 @@ class Gazetteer:
             found.append((m.start(), m.end(), key))
         return found
 
+    def intersection(self, a: str, b: str) -> dict | None:
+        """Where two streets meet, if they really do."""
+        a, b = street_key(a), street_key(b)
+        best = min(((abs(xa - xb) * M_PER_X + abs(ya - yb) * M_PER_Y, xa, ya, xb, yb)
+                    for _, xa, ya in self.blocks.get(a, ()) for _, xb, yb in self.blocks.get(b, ())), default=None)
+        if a == b or not best or best[0] > 160:
+            return None
+        _, xa, ya, xb, yb = best
+        return {"label": f"{self.display[a]} & {self.display[b]}", "precision": "intersection",
+                "x": round((xa + xb) / 2), "y": round((ya + yb) / 2)}
+
+    def block(self, number: int, street: str) -> dict | None:
+        """The hundred-block of a street that an address number falls in."""
+        key, block = street_key(street), number // 100 * 100
+        for known, x, y in self.blocks.get(key, ()):
+            if known == block:
+                return {"label": f"{block} block {self.display[key]}", "precision": "block", "x": x, "y": y}
+        return None
+
     def locate(self, text: str) -> dict | None:
         mentions = self._mentions(text)
-        # "<street> and|&|at|/ <street>" where the two streets really do meet
+        # "<street> and|&|at|/ <street>"
         for (_, end_a, a), (start_b, _, b) in zip(mentions, mentions[1:]):
-            if a != b and re.fullmatch(r"\s*(?:and|&|at|near|/|x)\s*", text[end_a:start_b], re.IGNORECASE):
-                best = min(((abs(xa - xb) * M_PER_X + abs(ya - yb) * M_PER_Y, xa, ya, xb, yb)
-                            for _, xa, ya in self.blocks[a] for _, xb, yb in self.blocks[b]), default=None)
-                if best and best[0] <= 160:
-                    _, xa, ya, xb, yb = best
-                    return {"label": f"{self.display[a]} & {self.display[b]}", "precision": "intersection",
-                            "x": round((xa + xb) / 2), "y": round((ya + yb) / 2)}
+            if re.fullmatch(r"\s*(?:and|&|at|near|/|x)\s*", text[end_a:start_b], re.IGNORECASE):
+                if where := self.intersection(a, b):
+                    return where
         # "<number> [block of] <street>"
         for start, _, key in mentions:
             if m := re.search(r"(\d{3,5})\s+(?:block\s+(?:of\s+)?)?$", text[:start], re.IGNORECASE):
-                block = int(m.group(1)) // 100 * 100
-                for number, x, y in self.blocks[key]:
-                    if number == block:
-                        return {"label": f"{block} block {self.display[key]}", "precision": "block", "x": x, "y": y}
+                if where := self.block(int(m.group(1)), key):
+                    return where
         return None
 
 
@@ -384,15 +458,19 @@ _STOP = {"north", "park", "san", "diego", "police", "sdpd", "after", "with", "fr
          "person", "dies", "died", "dead", "death", "killed", "year", "old"}
 
 
-def pacific_date(when: datetime) -> date:
-    """UTC -> calendar date in San Diego (US daylight time: second Sunday of March to first of November)."""
-    utc = when.astimezone(timezone.utc)
-    march = date(utc.year, 3, 8)
+def _pacific_offset(day: date) -> timedelta:
+    """How far San Diego is behind UTC on a date (US daylight time: second Sunday of March to first of November)."""
+    march = date(day.year, 3, 8)
     start = march + timedelta(days=(6 - march.weekday()) % 7)
-    november = date(utc.year, 11, 1)
+    november = date(day.year, 11, 1)
     end = november + timedelta(days=(6 - november.weekday()) % 7)
-    offset = 7 if start <= utc.date() < end else 8
-    return (utc - timedelta(hours=offset)).date()
+    return timedelta(hours=7 if start <= day < end else 8)
+
+
+def pacific_date(when: datetime) -> date:
+    """UTC -> calendar date in San Diego."""
+    utc = when.astimezone(timezone.utc)
+    return (utc - _pacific_offset(utc.date())).date()
 
 
 _SAME_WORD = {"shot": "shoot", "shots": "shoot", "struck": "hit", "one": "1", "two": "2", "three": "3", "four": "4"}
@@ -433,8 +511,10 @@ def group_stories(items: list[dict]) -> list[list[dict]]:
             home["last"] = item["_date"]
         else:
             stories.append({"items": [item], "last": item["_date"]})
-    # A news headline leads its story when there is one; otherwise the earliest post.
-    return [sorted(s["items"], key=lambda i: (i["source"] != "news", i["published"])) for s in stories]
+    # A news headline leads its story when there is one, the outlet's own copy (summary, direct
+    # link) ahead of the Google News one; otherwise the earliest post.
+    return [sorted(s["items"], key=lambda i: (i["source"] != "news", i["source"] == "news" and not i.get("text"),
+                                              i["published"])) for s in stories]
 
 
 def export(store_path: Path = config.CHATTER_STORE, out_dir: Path = config.OUT_DIR,
@@ -464,11 +544,11 @@ def export(store_path: Path = config.CHATTER_STORE, out_dir: Path = config.OUT_D
                 where = gazetteer.locate(item["title"] + ". " + item.get("text", ""))
                 if where:
                     break
-        seen = {lead["outlet"]}
+        seen = {lead["outlet"].lower()}              # Google News spells "10News.com" both ways
         more = []
         for item in group[1:]:
-            if item["outlet"] not in seen:
-                seen.add(item["outlet"])
+            if item["outlet"].lower() not in seen:
+                seen.add(item["outlet"].lower())
                 more.append({"outlet": item["outlet"], "url": item["url"]})
         text = lead.get("text", "")
         stories.append({
@@ -510,6 +590,7 @@ def collect(offline: bool = False, backfill: bool = False,
             fetched += news
         except (urllib.error.URLError, ET.ParseError, TimeoutError) as e:
             print(f"    Google News: skipped ({e})")
+        fetched += fetch_feeds(config.CHATTER_FEEDS, places)
         try:
             fetched += fetch_reddit(config.CHATTER_SUBREDDITS, places)
         except (urllib.error.URLError, ET.ParseError, TimeoutError) as e:

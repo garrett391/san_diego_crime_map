@@ -11,7 +11,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import config
@@ -20,12 +20,18 @@ STATE_FILE = ".fetch_state.json"
 CHUNK = 1 << 20
 
 
-def sources(years: list[int] | None = None) -> list[tuple[str, str]]:
+def sources(years: list[int] | None = None, today: date | None = None) -> list[tuple[str, str]]:
     """(local filename, url) for everything the build needs."""
-    years = years or list(range(config.FIRST_YEAR, date.today().year + 1))
+    today = today or date.today()
+    years = years or list(range(config.FIRST_YEAR, today.year + 1))
     files = [(f"pd_nibrs_{y}_datasd.csv", config.NIBRS_URL.format(year=y)) for y in years]
     files.append(("pd_beats_datasd.geojson", config.BEATS_GEOJSON_URL))
     files.append(("pd_beat_codes_list_datasd.csv", config.BEAT_CODES_URL))
+    # The dispatch log: this year's file, and last year's while the dashboard's window still reaches
+    # into it (the log runs a couple of days behind, hence the extra week).
+    reach = today - timedelta(days=config.DISPATCH_DAYS + 7)
+    files += [(f"pd_calls_for_service_{y}_datasd.csv", config.CALLS_URL.format(year=y))
+              for y in range(reach.year, today.year + 1)]
     return files
 
 

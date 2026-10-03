@@ -2,6 +2,7 @@
 # One-time setup: repository Settings -> Pages -> Source: "GitHub Actions".
 # News and Reddit items come from chatter/items.jsonl as committed; this job does not fetch them
 # (Reddit turns away requests from cloud servers), so refresh those locally and commit the file.
+# Police dispatch calls are one of the city's files, so `fetch` brings those in fresh on every run.
 name: Publish dashboard
 
 on:

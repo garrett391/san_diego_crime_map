@@ -20,7 +20,9 @@ const TAGS = {
   violence: 'Violence', vehicle: 'Vehicle', burglary: 'Burglary', theft: 'Theft', harassment: 'Harassment',
   police: 'Police activity', vandalism: 'Vandalism', traffic: 'Traffic', court: 'Court',
 };
-const CHATTER_KINDS = [{ id: 'all', label: 'All' }, { id: 'news', label: 'News' }, { id: 'reddit', label: 'Reddit' }];
+const CHATTER_KINDS = [
+  { id: 'all', label: 'All' }, { id: 'news', label: 'News' }, { id: 'reddit', label: 'Reddit' }, { id: 'dispatch', label: 'Dispatch' },
+];
 
 const $ = (id) => document.getElementById(id);
 
@@ -33,7 +35,7 @@ function el(tag, className, text, parent) {
 }
 
 const state = { beat: null, range: '365', sev: null, cat: null, mode: 'dots', chatterKind: 'all', chatterShown: 12 };
-const data = { meta: null, city: null, beats: null, chatter: null, hoods: new Map() };
+const data = { meta: null, city: null, beats: null, chatter: null, dispatch: null, hoods: new Map() };
 let ctx = null;
 let map = null;
 let hoodInfo = null;      // Map(beat -> entry of meta.hoods)
@@ -366,6 +368,29 @@ function incidentList(hood, indices, limit = 40) {
   return list;
 }
 
+// Police dispatch calls for the home neighborhood. A call's map point is its block's, so several
+// calls can share one spot; `spot` is that point as "x,y".
+function callsInRange(spot) {
+  if (!data.dispatch || state.beat !== data.meta.home_beat) return [];
+  return data.dispatch.calls.filter((c) => c.day > current.range.after && (!spot || (c.x !== null && `${c.x},${c.y}` === spot)));
+}
+
+const plural = (n, word) => `${F.int(n)} ${word}${n === 1 ? '' : 's'}`;
+const dayLabel = (iso, options) => F.date(new Date(`${iso}T00:00:00Z`), options);
+
+function callList(calls) {
+  const list = el('div', 'pop-list');
+  for (const c of calls) {
+    const item = el('div', 'pop-item', null, list);
+    el('span', 'ring dot', null, item);
+    const line = el('div', null, null, item);
+    el('span', null, `${c.what} `, line);
+    el('span', 'pop-date', `${dayLabel(c.date, { year: false })}, ${F.clock(c.time)}`, line);
+    if (c.outcome) el('div', 'pop-code', c.outcome[0].toUpperCase() + c.outcome.slice(1), item);
+  }
+  return list;
+}
+
 function openPlace(p, lngLat) {
   if (!map || !current.hood) return;
   const { hood, mask, range } = current;
@@ -374,8 +399,24 @@ function openPlace(p, lngLat) {
   const node = el('div');
   el('div', 'pop-title', place[0] || 'Address not given', node);
   el('div', 'pop-sub', `${F.int(indices.length)} ${indices.length === 1 ? 'report' : 'reports'}, ${range.phrase}. Location is the block, not the exact address.`, node);
-  node.appendChild(incidentList(hood, indices));
+  const reports = node.appendChild(incidentList(hood, indices));
+  const calls = callsInRange(`${place[1]},${place[2]}`);
+  if (calls.length) {
+    reports.classList.add('short');                  // two lists have to fit inside the map
+    el('div', 'pop-sub pop-more', `${plural(calls.length, 'police call')} here since ${dayLabel(data.dispatch.first, { year: false })}, not confirmed crimes:`, node);
+    node.appendChild(callList(calls)).classList.add('short');
+  }
   map.popup(lngLat || [place[1] / 1e5, place[2] / 1e5], node);
+}
+
+function openCalls(spot, lngLat) {
+  const calls = callsInRange(spot);
+  if (!calls.length || !map) return;
+  const node = el('div');
+  el('div', 'pop-title', calls[0].place, node);
+  el('div', 'pop-sub', `${plural(calls.length, 'police call')} since ${dayLabel(data.dispatch.first, { year: false })}. A call is what someone reported, not a confirmed crime.`, node);
+  node.appendChild(callList(calls));
+  map.popup(lngLat || [calls[0].x / 1e5, calls[0].y / 1e5], node);
 }
 
 function openStory(id, lngLat) {
@@ -425,14 +466,17 @@ function renderExplore(hood, mask) {
   const pins = isHome && data.chatter
     ? data.chatter.stories.filter((s) => s.where && s.day > range.after && s.day <= range.through)
     : [];
+  const spots = new Map();                           // "x,y" -> a police call there
+  for (const c of callsInRange()) if (c.x !== null) spots.set(`${c.x},${c.y}`, c);
   if (map) {
+    const point = (x, y, properties) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x / 1e5, y / 1e5] }, properties });
     map.setPlaces({ type: 'FeatureCollection', features });
     map.setChatter({
       type: 'FeatureCollection',
-      features: pins.map((s) => ({
-        type: 'Feature', geometry: { type: 'Point', coordinates: [s.where.x / 1e5, s.where.y / 1e5] },
-        properties: { id: s.id },
-      })),
+      features: [
+        ...[...spots].map(([spot, c]) => point(c.x, c.y, { id: `calls:${spot}`, dispatch: true })),
+        ...pins.map((s) => point(s.where.x, s.where.y, { id: s.id })),
+      ],
     });
     map.setMode(state.mode);
   }
@@ -458,6 +502,11 @@ function renderExplore(hood, mask) {
     const row = el('div', 'row', null, legend);
     el('span', 'ring', null, row);
     el('span', null, 'Unverified news or Reddit post', row);
+  }
+  if (spots.size) {
+    const row = el('div', 'row', null, legend);
+    el('span', 'ring dot', null, row);
+    el('span', null, `Police call since ${dayLabel(data.dispatch.first, { year: false })}, unverified`, row);
   }
 
   // by type, with the year-over-year change where the period allows one
@@ -562,54 +611,97 @@ function renderNearby(cmask) {
     + 'Busy commercial areas draw more reports than their size suggests; there are no population figures here.';
 }
 
+/** Scroll to a spot on the map and open what is there, widening the period first if it hides the pin. */
+async function findOnMap(day, x, y, open) {
+  if (!(day > current.range.after)) {
+    state.range = 'all';
+    await update();
+  }
+  showOnMap([x / 1e5, y / 1e5], open);
+}
+
+function feedStory(li, s) {
+  const meta = el('div', 'feed-meta', null, li);
+  el('span', null, dayLabel(s.date), meta);
+  el('span', null, s.more.length ? `${s.outlet} +${s.more.length} more` : s.outlet, meta);
+  for (const t of s.tags) el('span', 'tag', TAGS[t] || t, meta);
+  const a = el('a', 'feed-title', s.title, li);
+  a.href = s.url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  if (s.excerpt) el('p', 'feed-excerpt', s.excerpt, li);
+  if (s.where && map) {
+    const b = el('button', 'link', `On the map: ${s.where.label}`, li);
+    b.type = 'button';
+    b.addEventListener('click', () => findOnMap(s.day, s.where.x, s.where.y, () => openStory(s.id)));
+  }
+}
+
+/** One day's police calls as a single feed entry; a call's block is a button when it is on the map. */
+function feedCalls(li, date, calls) {
+  const meta = el('div', 'feed-meta', null, li);
+  el('span', null, dayLabel(date), meta);
+  el('span', null, 'SDPD dispatch', meta);
+  for (const t of new Set(calls.map((c) => c.tag))) el('span', 'tag', TAGS[t] || t, meta);
+  el('div', 'feed-title', plural(calls.length, 'police call'), li);
+  const rows = el('ul', 'calls', null, li);
+  for (const c of calls) {
+    const row = el('li', null, null, rows);
+    el('span', 'call-time', F.clock(c.time), row);
+    const what = el('span', null, `${c.what} · `, row);
+    if (c.x !== null && map) {
+      const b = el('button', 'link', c.place, what);
+      b.type = 'button';
+      b.addEventListener('click', () => findOnMap(c.day, c.x, c.y, () => openCalls(`${c.x},${c.y}`)));
+    } else {
+      el('span', null, c.place, what);
+    }
+    if (c.outcome) el('span', 'call-outcome', ` · ${c.outcome}`, what);
+  }
+}
+
 function renderChatter() {
   const section = $('chatter-section');
   const list = $('chatter');
   const more = $('chatter-more');
   list.replaceChildren();
   $('chatter-filter').replaceChildren();
-  if (!data.chatter || !data.chatter.stories.length) {
+  const stories = data.chatter ? data.chatter.stories : [];
+  const days = new Map();                            // date -> that day's police calls, newest first
+  for (const c of data.dispatch ? data.dispatch.calls : []) {
+    if (!days.has(c.date)) days.set(c.date, []);
+    days.get(c.date).push(c);
+  }
+  if (!stories.length && !days.size) {
     section.hidden = true;
     return;
   }
   section.hidden = false;
   if (state.beat !== data.meta.home_beat) {
     more.hidden = true;
-    el('li', 'feed-excerpt', `News and Reddit posts are collected for ${data.chatter.places.join(', ')} only. `
+    el('li', 'feed-excerpt', `News, Reddit posts and police calls are collected for ${hoodInfo.get(data.meta.home_beat).name} only. `
       + 'To follow a different neighborhood, change HOME_BEAT and CHATTER_PLACES in pipeline/config.py.', list);
     return;
   }
-  segmented(el('div', 'segmented', null, $('chatter-filter')), CHATTER_KINDS, state.chatterKind, (id) => {
+  const kinds = CHATTER_KINDS.filter((k) => k.id !== 'dispatch' || days.size);
+  segmented(el('div', 'segmented', null, $('chatter-filter')), kinds, state.chatterKind, (id) => {
     state.chatterKind = id;
     state.chatterShown = 12;
     renderChatter();
   });
-  const stories = data.chatter.stories.filter((s) => state.chatterKind === 'all' || s.kind === state.chatterKind);
-  for (const s of stories.slice(0, state.chatterShown)) {
+  // Newest day first. A day's police calls are one entry, after that day's stories.
+  const entries = [
+    ...stories.map((s) => ({ kind: s.kind, date: s.date, story: s })),
+    ...[...days].map(([date, calls]) => ({ kind: 'dispatch', date, calls })),
+  ].filter((e) => state.chatterKind === 'all' || e.kind === state.chatterKind)
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (a.kind === 'dispatch') - (b.kind === 'dispatch')));
+  for (const e of entries.slice(0, state.chatterShown)) {
     const li = el('li', null, null, list);
-    const meta = el('div', 'feed-meta', null, li);
-    el('span', null, F.date(new Date(`${s.date}T00:00:00Z`)), meta);
-    el('span', null, s.more.length ? `${s.outlet} +${s.more.length} more` : s.outlet, meta);
-    for (const t of s.tags) el('span', 'tag', TAGS[t] || t, meta);
-    const a = el('a', 'feed-title', s.title, li);
-    a.href = s.url;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    if (s.excerpt) el('p', 'feed-excerpt', s.excerpt, li);
-    if (s.where && map) {
-      const b = el('button', 'link', `On the map: ${s.where.label}`, li);
-      b.type = 'button';
-      b.addEventListener('click', async () => {
-        if (!(s.day > current.range.after)) {       // widen the period so the pin is on the map
-          state.range = 'all';
-          await update();
-        }
-        showOnMap([s.where.x / 1e5, s.where.y / 1e5], () => openStory(s.id));
-      });
-    }
+    if (e.story) feedStory(li, e.story);
+    else feedCalls(li, e.date, e.calls);
   }
-  more.hidden = stories.length <= state.chatterShown;
-  more.textContent = `Show more (${F.int(stories.length - state.chatterShown)} left)`;
+  more.hidden = entries.length <= state.chatterShown;
+  more.textContent = `Show more (${F.int(entries.length - state.chatterShown)} left)`;
 }
 
 function renderMethod() {
@@ -656,10 +748,17 @@ function renderMethod() {
     el('p', null, 'The dashed columns take the average of the last 12 fully reported months and adjust it for the time of year, using the citywide seasonal pattern. '
       + 'The range is where 9 in 10 past months actually landed when the same rule was applied to this neighborhood’s own history. It says what “no change” would look like; it does not predict events.', d);
   });
-  block('News and Reddit posts', (d) => {
-    el('p', null, 'Headlines come from Google News and posts from Reddit’s public feeds, kept when they mention the neighborhood and read like a crime or police-activity report. '
+  block('News, Reddit and police dispatch', (d) => {
+    el('p', null, 'Headlines come from Google News and local outlets’ own feeds, and posts from Reddit’s public feeds, kept when they mention the neighborhood and read like a crime or police-activity report. '
       + 'A simple keyword filter makes that call, so expect some misses and a few wrong picks. Posts are unverified, a post is placed on the map only when it names an intersection or block, '
       + 'and the number of posts says nothing about the amount of crime. No usernames are stored.', d);
+    const calls = data.dispatch;
+    if (!calls) return;
+    el('p', null, `Police calls come from SDPD’s dispatch log (calls for service), which the city publishes about two days behind. This page lists the ${calls.days} days to ${dayLabel(calls.through)} `
+      + `for ${hoodInfo.get(calls.beat).name}: ${F.int(calls.calls.length)} of the ${F.int(calls.logged)} calls logged there. The rest were about something other than a possible crime `
+      + '(noise, parking, welfare checks, traffic stops, alarms) or were cancelled, duplicates or unfounded. '
+      + 'A call is what someone told a dispatcher, not a confirmed crime, and most end without a report. “Reported afterwards” means the caller found out later instead of seeing it happen. '
+      + 'Calls are never added to the counts on this page, and their place on the map is the block or intersection, not the address.', d);
   });
 }
 
@@ -702,6 +801,7 @@ async function start() {
     return;
   }
   data.chatter = await json('data/chatter.json').catch(() => null);
+  data.dispatch = await json('data/dispatch.json').catch(() => null);
   ctx = S.context(data.meta);
   hoodInfo = new Map(data.meta.hoods.map((h) => [h.beat, h]));
   readHash();
@@ -714,7 +814,7 @@ async function start() {
     chatterColor: CHATTER_COLOR,
     onBeat: (beat) => { state.beat = beat; update(); },
     onPlace: (p, lngLat) => openPlace(p, lngLat),
-    onChatter: (id, lngLat) => openStory(id, lngLat),
+    onChatter: (id, lngLat) => (id.startsWith('calls:') ? openCalls(id.slice(6), lngLat) : openStory(id, lngLat)),
     onHoverBeat: (name) => {
       $('map-hover').hidden = !name;
       if (name) $('map-hover').textContent = `${name} · click to switch`;

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from datetime import date, datetime, timezone
 
 import pytest
@@ -123,6 +124,80 @@ def test_feed_parsing():
     assert story["outlet"] == "Patch" and story["published"].startswith("2026-08-13T15:04:05")
 
 
+OUTLET_FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:media="http://search.yahoo.com/mrss/">
+<channel>
+  <title>Local</title>
+  <item>
+    <title>Man stabbed during fight outside bar</title>
+    <link>https://example.test/stabbing</link>
+    <guid>4080707</guid>
+    <media:content url="https://example.test/photo.jpg"/>
+    <description>&lt;p&gt;Police say the stabbing happened in &lt;b&gt;North Park&lt;/b&gt; early Sunday.&lt;/p&gt;</description>
+    <pubDate>Thu, Oct 01 2026 11:49:34 PM</pubDate>
+  </item>
+  <item>
+    <title>Council approves budget</title>
+    <link>https://example.test/budget</link>
+    <description></description>
+    <content:encoded>&lt;p&gt;The vote was 7-2.&lt;/p&gt;</content:encoded>
+    <pubDate>Sat, 03 Oct 2026 19:05:25 GMT</pubDate>
+  </item>
+  <item>
+    <title>No date, so it is skipped</title>
+    <link>https://example.test/undated</link>
+  </item>
+</channel></rss>"""
+
+ATOM_FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Car stolen from driveway</title>
+    <link href="https://example.test/car"/>
+    <id>tag:example.test,2026:car</id>
+    <updated>2026-10-01T15:49:34-07:00</updated>
+    <summary>It happened in North Park.</summary>
+  </entry>
+</feed>"""
+
+
+def test_outlet_feed_parsing():
+    stabbing, budget = ch.parse_feed(OUTLET_FEED, "NBC 7 San Diego")
+    assert stabbing["id"] == "feed:NBC 7 San Diego:4080707" and stabbing["source"] == "news"
+    assert stabbing["outlet"] == "NBC 7 San Diego" and stabbing["url"] == "https://example.test/stabbing"
+    assert stabbing["text"] == "Police say the stabbing happened in North Park early Sunday."
+    # NBC writes local time with AM/PM and no zone: 11:49 pm on Oct 1 in San Diego is Oct 2 in UTC
+    assert stabbing["published"] == "2026-10-02T06:49:34+00:00"
+    assert ch.pacific_date(datetime.fromisoformat(stabbing["published"])) == date(2026, 10, 1)
+    # no guid: the link identifies the article; no description: the article body stands in
+    assert budget["id"] == "feed:NBC 7 San Diego:https://example.test/budget"
+    assert budget["text"] == "The vote was 7-2." and budget["published"] == "2026-10-03T19:05:25+00:00"
+    (car,) = ch.parse_feed(ATOM_FEED, "Example")
+    assert car["url"] == "https://example.test/car" and car["published"] == "2026-10-01T22:49:34+00:00"
+    assert car["text"] == "It happened in North Park."
+
+
+def test_an_outlets_summary_can_name_the_neighborhood():
+    title = "Man stabbed during fight outside bar"
+    assert ch.is_relevant(item("news", title, "Police say the stabbing happened in North Park early Sunday."), PLACES)
+    assert not ch.is_relevant(item("news", title, "Police say the stabbing happened in Pacific Beach."), PLACES)
+    # the crime still has to be in the headline: a passing mention deep in an article does not count
+    assert not ch.is_relevant(item("news", "Council approves North Park bike lanes", "One speaker said her bike was stolen."), PLACES)
+
+
+def test_fetch_feeds_keeps_what_names_the_neighborhood_and_survives_a_dead_feed(monkeypatch):
+    def fake_get(url):
+        if "dead" in url:
+            raise urllib.error.URLError("no route")
+        return OUTLET_FEED, {}
+    monkeypatch.setattr(ch, "_get", fake_get)
+    log = []
+    items = ch.fetch_feeds([("NBC 7 San Diego", "https://example.test/feed"), ("Gone", "https://dead.test/feed")],
+                           PLACES, log=log.append)
+    assert [i["title"] for i in items] == ["Man stabbed during fight outside bar"]
+    assert any("Gone: skipped" in line for line in log)
+
+
 GAZETTEER = ch.Gazetteer([
     ["3000 block University Ave", -11713000, 3274850], ["3100 block University Ave", -11712800, 3274850],
     ["3900 block 30th St", -11713010, 3274900], ["4000 block 30th St", -11713010, 3275050],
@@ -189,6 +264,14 @@ def test_grouping_stories():
     shooting = next(s for s in stories if any("Shot" in i["title"] for i in s))
     assert {i["outlet"] for i in shooting} == {"Patch", "fox5", "r/sandiego"}
     assert shooting[0]["source"] == "news"            # a headline leads even though the repost came first
+
+
+def test_an_outlets_own_copy_leads_its_story():
+    title = "2 Men Shot After Leaving North Park Bar"
+    google = dated(item("news", title, outlet="NBC 7 San Diego", published="2026-08-13T15:00:00+00:00"))
+    own = dated(item("news", title, "Two men were shot early Thursday.", outlet="NBC 7 San Diego", published="2026-08-13T15:05:00+00:00"))
+    (story,) = ch.group_stories([google, own])
+    assert story[0] is own                            # it has the summary and the direct link
 
 
 def test_pacific_date():

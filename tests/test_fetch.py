@@ -1,11 +1,22 @@
+from datetime import date
+
 from pipeline import fetch
 
 
 def test_sources_cover_every_year_and_the_boundaries():
-    names = [name for name, _ in fetch.sources([2024, 2025])]
+    names = [name for name, _ in fetch.sources([2024, 2025], today=date(2026, 10, 3))]
     assert names == ["pd_nibrs_2024_datasd.csv", "pd_nibrs_2025_datasd.csv",
-                     "pd_beats_datasd.geojson", "pd_beat_codes_list_datasd.csv"]
+                     "pd_beats_datasd.geojson", "pd_beat_codes_list_datasd.csv",
+                     "pd_calls_for_service_2026_datasd.csv"]
     assert fetch.sources()[0][0] == "pd_nibrs_2020_datasd.csv"
+
+
+def test_the_dispatch_log_reaches_into_last_year_in_january():
+    # the dashboard lists the last 30 days of calls, so early in a year it needs two files
+    names = [name for name, _ in fetch.sources(today=date(2027, 1, 20))]
+    assert names[-2:] == ["pd_calls_for_service_2026_datasd.csv", "pd_calls_for_service_2027_datasd.csv"]
+    names = [name for name, _ in fetch.sources(today=date(2027, 3, 1))]
+    assert [n for n in names if "calls" in n] == ["pd_calls_for_service_2027_datasd.csv"]
 
 
 def test_is_current():
