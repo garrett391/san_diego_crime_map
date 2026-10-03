@@ -1,1 +1,11 @@
-*data
+# Raw downloads from the city portal (large; re-created by `python -m pipeline fetch`)
+/data/
+
+# Generated site data (re-created by `python -m pipeline build`)
+/site/data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

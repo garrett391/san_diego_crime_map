@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>San Diego neighborhood crime</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231a1a19'/%3E%3Crect x='3' y='8' width='2.5' height='5' fill='%231c5cab'/%3E%3Crect x='6.75' y='5' width='2.5' height='8' fill='%235598e7'/%3E%3Crect x='10.5' y='3' width='2.5' height='10' fill='%23b7d3f6'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-row">
+      <div class="brand">
+        <span class="brand-kicker">San Diego crime</span>
+        <label class="visually-hidden" for="hood-select">Neighborhood</label>
+        <select id="hood-select" aria-label="Neighborhood"></select>
+      </div>
+      <p class="asof" id="asof"></p>
+    </div>
+  </header>
+
+  <main class="wrap" id="main" aria-busy="true">
+    <p class="boot" id="boot">Loading…</p>
+
+    <section class="filters" aria-label="Filters" hidden>
+      <div class="filter-group">
+        <span class="filter-label">Severity</span>
+        <div class="chips" id="sev-chips" role="group" aria-label="Severity"></div>
+      </div>
+      <div class="filter-group">
+        <span class="filter-label">Type</span>
+        <div class="chips" id="cat-chips" role="group" aria-label="Offense type"></div>
+      </div>
+      <button class="link" id="reset" type="button" hidden>Reset filters</button>
+    </section>
+
+    <section class="summary" aria-labelledby="summary-h" hidden>
+      <h2 class="visually-hidden" id="summary-h">Summary</h2>
+      <div class="card hero">
+        <p class="hero-label" id="hero-label"></p>
+        <p class="hero-value" id="hero-value"></p>
+        <p class="delta" id="hero-delta"></p>
+        <p class="hero-note" id="hero-note"></p>
+      </div>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <section class="grid-trend" hidden>
+      <figure class="card">
+        <header class="card-head">
+          <h2>Reported offenses per month</h2>
+          <button class="link" id="trend-table-toggle" type="button" aria-expanded="false" aria-controls="trend-table">Show as table</button>
+        </header>
+        <ul class="legend" id="trend-legend"></ul>
+        <div id="trend-chart"></div>
+        <div id="trend-table" class="table-scroll" hidden></div>
+        <figcaption id="trend-caption"></figcaption>
+      </figure>
+      <figure class="card">
+        <header class="card-head"><h2 id="index-title">Compared with the city</h2></header>
+        <ul class="legend" id="index-legend"></ul>
+        <div id="index-chart"></div>
+        <figcaption id="index-caption"></figcaption>
+      </figure>
+    </section>
+
+    <section class="explore" aria-labelledby="explore-h" hidden>
+      <header class="section-head">
+        <h2 id="explore-h">Where and what</h2>
+        <div class="controls">
+          <div class="segmented" id="range" role="group" aria-label="Period"></div>
+          <div class="segmented" id="mode" role="group" aria-label="Map style"></div>
+        </div>
+      </header>
+      <div class="grid-explore">
+        <div class="col">
+          <div class="card map-card">
+            <div id="map"></div>
+            <p class="map-hover" id="map-hover" hidden></p>
+            <div class="map-legend" id="map-legend"></div>
+          </div>
+          <p class="note" id="map-note"></p>
+          <div class="card">
+            <header class="card-head"><h3>Latest reports</h3><span class="sub" id="latest-sub"></span></header>
+            <div class="table-scroll" id="latest"></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="card">
+            <header class="card-head"><h3>By type</h3><span class="sub" id="types-sub"></span></header>
+            <div id="types"></div>
+          </div>
+          <div class="card">
+            <header class="card-head"><h3>Most common offenses</h3></header>
+            <div id="offenses"></div>
+          </div>
+          <div class="card">
+            <header class="card-head"><h3>Busiest blocks</h3><span class="sub">Select one to find it on the map</span></header>
+            <div id="blocks"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="nearby-h" hidden id="nearby-section">
+      <header class="card-head">
+        <h2 id="nearby-h">Next-door neighborhoods</h2>
+        <span class="sub" id="nearby-sub"></span>
+      </header>
+      <div class="table-scroll" id="nearby"></div>
+    </section>
+
+    <section class="card" aria-labelledby="chatter-h" hidden id="chatter-section">
+      <header class="card-head">
+        <h2 id="chatter-h">What people are saying</h2>
+        <span class="sub">News headlines and Reddit posts. Unverified, and not a measure of how much crime there is.</span>
+      </header>
+      <div class="controls" id="chatter-filter"></div>
+      <ul class="feed" id="chatter"></ul>
+      <button class="link" id="chatter-more" type="button" hidden>Show more</button>
+    </section>
+
+    <section class="card method" id="method" hidden>
+      <h2>About these numbers</h2>
+      <div id="method-body"></div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js" defer></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
