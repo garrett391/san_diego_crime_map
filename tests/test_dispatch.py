@@ -18,7 +18,7 @@ def call(incident, when, call_type, disposition="K", beat="813", number="3000", 
 
 
 @pytest.fixture(scope="module")
-def exported(tmp_path_factory):
+def by_beat(tmp_path_factory):
     data = tmp_path_factory.mktemp("data")
     out = tmp_path_factory.mktemp("site") / "data"
     rows = [
@@ -41,6 +41,9 @@ def exported(tmp_path_factory):
         call("first-day", "2026-09-02 08:00:00.000", "594"),
         call("too-old", "2026-09-01 08:00:00.000", "594"),
         call("bad-date", "sometime", "594"),
+        # downtown: the log pads numbered streets with a zero, and some streets are a single letter
+        call("fifth", "2026-09-30 22:00:00.000", "242", beat="523", number="700", road="05TH"),
+        call("c-street", "2026-09-29 21:00:00.000", "594", beat="523", number="0", road="C ST", sfx="ST", cross="05TH AVE"),
     ]
     with open(data / "pd_calls_for_service_2026_datasd.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, quoting=csv.QUOTE_ALL)
@@ -51,14 +54,34 @@ def exported(tmp_path_factory):
         ["3000 block University Ave", -11713000, 3274850], ["3100 block University Ave", -11712800, 3274850],
         ["3900 block 30th St", -11713010, 3274900], ["4000 block 30th St", -11713010, 3275050],
     ]}), encoding="utf-8")
-    result = d.export(data, out, home_beat=813, days=30)
-    assert json.loads((out / "dispatch.json").read_text(encoding="utf-8")) == result
+    (out / "hood" / "523.json").write_text(json.dumps({"places": [
+        ["700 block 5th Ave", -11716000, 3271300], ["1100 block 5th Ave", -11716000, 3271690],
+        ["400 block C St", -11716050, 3271700],
+    ]}), encoding="utf-8")
+    result = d.export(data, out, [813, 521, 122, 523], days=30)
+    for beat, written in result.items():
+        assert json.loads((out / "dispatch" / f"{beat}.json").read_text(encoding="utf-8")) == written
     return result
+
+
+@pytest.fixture(scope="module")
+def exported(by_beat):
+    return by_beat[813]
 
 
 def test_window_ends_with_the_log_not_the_neighborhood(exported):
     assert exported["through"] == "2026-10-01" and exported["first"] == "2026-09-02"
     assert exported["beat"] == 813 and exported["days"] == 30
+
+
+def test_every_neighborhood_gets_its_own_calls(by_beat):
+    downtown, beach = by_beat[521], by_beat[122]
+    assert [c["id"] for c in downtown["calls"]] == ["other-beat"] and downtown["logged"] == 1
+    assert (downtown["first"], downtown["through"]) == ("2026-09-02", "2026-10-01")
+    # no offenses on record there (it has no hood file), so the call is named but not placed
+    assert (downtown["calls"][0]["place"], downtown["calls"][0]["x"]) == ("3000 block University Ave", None)
+    # a neighborhood with no calls still gets a file, so the page has something to load
+    assert beach["calls"] == [] and beach["logged"] == 0
 
 
 def test_only_possible_crimes_that_were_not_called_off_are_listed(exported):
@@ -84,6 +107,12 @@ def test_calls_are_placed_where_the_offense_records_know_the_spot(exported):
     assert (car["place"], car["x"], car["y"]) == ("2900 block El Cajon Blvd", None, None)
 
 
+def test_downtown_street_names_match_the_offense_records(by_beat):
+    fifth, c_street = by_beat[523]["calls"]
+    assert (fifth["place"], fifth["x"], fifth["y"]) == ("700 block 5th Ave", -11716000, 3271300)
+    assert (c_street["place"], c_street["x"], c_street["y"]) == ("C St & 5th Ave", -11716025, 3271695)
+
+
 def test_describe():
     assert d.describe("459") == ("Burglary", "burglary")
     assert d.describe("459R") == ("Burglary, reported afterwards", "burglary")
@@ -102,12 +131,12 @@ def test_street():
     assert d.street("", "") == ""
 
 
-def test_no_log_means_no_file(tmp_path):
-    assert d.export(tmp_path, tmp_path / "out", home_beat=813) is None
-    assert not (tmp_path / "out" / "dispatch.json").exists()
+def test_no_log_means_no_files(tmp_path):
+    assert d.export(tmp_path, tmp_path / "out", [813]) is None
+    assert not (tmp_path / "out" / "dispatch").exists()
 
 
 def test_a_log_with_unexpected_columns_is_skipped(tmp_path, capsys):
     (tmp_path / "pd_calls_for_service_2026_datasd.csv").write_text('"id","when"\n"1","2026-10-01"\n', encoding="utf-8")
-    assert d.export(tmp_path, tmp_path / "out", home_beat=813) is None
+    assert d.export(tmp_path, tmp_path / "out", [813]) is None
     assert "skipped" in capsys.readouterr().out

@@ -15,7 +15,7 @@ python -m venv .venv
 .venv\Scripts\activate              # macOS / Linux: source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m pipeline refresh          # download, collect chatter, build (a few minutes the first time)
+python -m pipeline refresh          # download, build, collect chatter (about 10 minutes the first time)
 python -m pipeline serve            # opens http://localhost:8000
 ```
 
@@ -24,12 +24,12 @@ Run `refresh` again whenever you want newer data. The city rewrites its files ev
 | Command | What it does |
 | --- | --- |
 | `python -m pipeline fetch` | Downloads the SDPD files, offense reports and this year's dispatch log, into `data/` (about 290 MB; files that have not changed are skipped) |
-| `python -m pipeline chatter` | Collects news and Reddit posts into `chatter/items.jsonl`. Add `--backfill` once to search older news, or `--offline` to re-score what is stored without fetching |
-| `python -m pipeline build` | Turns `data/` into `site/data/` (about 15 seconds) |
+| `python -m pipeline build` | Turns `data/` into `site/data/` (about 20 seconds) |
+| `python -m pipeline chatter` | Collects news and Reddit posts about every neighborhood into `chatter/items.jsonl` (about 6 minutes, most of it one Google News search per neighborhood name). It needs a build first, which is what knows the neighborhoods. Add `--backfill` once to dig for older items (about 40 minutes, because Reddit allows one search a minute), or `--offline` to re-score what is stored without fetching |
 | `python -m pipeline serve` | Serves `site/` at http://localhost:8000 |
-| `python -m pipeline refresh` | `fetch`, then `chatter`, then `build` |
+| `python -m pipeline refresh` | `fetch`, then `build`, then `chatter` |
 
-Any neighborhood can be opened from the menu or by clicking it on the map. To change which one the page opens on, and which one news, Reddit posts and dispatch calls are collected for, edit `HOME_BEAT` and `CHATTER_PLACES` in [pipeline/config.py](pipeline/config.py). The news feeds and subreddits that are read (`CHATTER_FEEDS`, `CHATTER_SUBREDDITS`) are lists in the same file.
+Any neighborhood can be opened from the menu or by clicking it on the map, and each has its own news, Reddit posts and police calls. To change which one the page opens on, edit `HOME_BEAT` in [pipeline/config.py](pipeline/config.py). The same file lists the news feeds and subreddits that are read (`CHATTER_FEEDS`, `CHATTER_SUBREDDITS`), the names people use for a neighborhood that SDPD does not (`CHATTER_ALIASES`), the SDPD names too ordinary to search for (`CHATTER_SKIP`), and the outlets whose headlines are left out (`CHATTER_SKIP_OUTLETS`).
 
 ## What is on the page
 
@@ -39,7 +39,7 @@ Any neighborhood can be opened from the menu or by clicking it on the map. To ch
 - **Map.** One circle per block, sized by the number of reports and colored by the most serious one. Click a circle for its reports. A density view is one click away.
 - **By type, busiest blocks, latest reports**, all for the period you pick (30 days, 3 months, 12 months, or everything since 2020).
 - **Next-door neighborhoods**, compared on the same footing.
-- **What people are saying.** News and Reddit posts that mention the neighborhood, grouped so one incident covered by eight outlets shows once. A post that names an intersection or block is pinned on the map. Police dispatch calls from the last 30 days are listed day by day and drawn as small dots on their blocks.
+- **What people are saying**, for whichever neighborhood is open. News and Reddit posts that name it, grouped so one incident covered by eight outlets shows once. A post that names an intersection or block is pinned on the map. Police dispatch calls from the last 30 days are listed day by day and drawn as small dots on their blocks.
 
 Severity and type filters at the top apply to everything. The filters, period and neighborhood are kept in the URL, so a view can be bookmarked or shared.
 
@@ -81,15 +81,15 @@ News and Reddit RSS ───chatter─▶ chatter/items.jsonl ─────�
 | `pipeline/fetch.py` | Downloads the yearly SDPD files; a failed download never replaces a good file |
 | `pipeline/build.py` | DuckDB: load, classify, place each offense in a neighborhood, write JSON |
 | `pipeline/categories.py` | Offense code to category and severity; what counts as paperwork |
-| `pipeline/chatter.py` | News and Reddit: fetch, score for relevance, group into stories, locate intersections |
-| `pipeline/dispatch.py` | Police dispatch: the home neighborhood's recent calls about a possible crime, in plain words, placed on their blocks |
+| `pipeline/chatter.py` | News and Reddit: fetch, match to neighborhoods by name, score for relevance, group into stories, locate intersections |
+| `pipeline/dispatch.py` | Police dispatch: each neighborhood's recent calls about a possible crime, in plain words, placed on their blocks |
 | `pipeline/config.py` | Home neighborhood, data URLs, chatter settings |
 | `site/js/stats.js` | Every number on the page, as pure functions |
 | `site/js/charts.js`, `map.js`, `app.js` | Hand-drawn SVG charts, the MapLibre map, and the page logic |
 | `analysis/backtest.py` | The replay behind decision 3 |
 | `tests/` | Python tests, including a full build of a tiny made-up city, and JavaScript tests for the statistics |
 
-The build is rerun from scratch every time, because the city rewrites past years as investigations proceed. It writes to a temporary folder and swaps it in only on success. The page loads about 500 KB of its own files up front, then one file per neighborhood (North Park's is 400 KB) on demand.
+The build is rerun from scratch every time, because the city rewrites past years as investigations proceed. It writes to a temporary folder and swaps it in only on success. The page loads about 400 KB of its own files up front, then three files for the neighborhood on screen: its offenses (North Park's is 400 KB), its stories and its police calls.
 
 The only Python dependency is DuckDB. The page uses MapLibre GL from a CDN and CARTO's free Dark Matter basemap, with no build step and no API keys.
 
@@ -116,8 +116,9 @@ The workflow does not collect news or Reddit posts (Reddit turns away requests f
 - Addresses are rounded to the hundred-block. A circle marks a block, never a building.
 - There are no population figures, so neighborhoods are compared by count, by area and by trend, not per resident. A busy commercial strip draws more reports than the number of people who live there would suggest.
 - The public CSV files carry the date of an offense but not the time of day.
-- The chatter filter is keyword rules. It misses some relevant posts and keeps a few irrelevant ones, and the number of posts says nothing about the amount of crime. History is thin: Google News returns about ten headlines per half-year for one neighborhood, Reddit's search returns the 100 newest matches per subreddit, and an outlet's own feed holds only its last few days, so it adds something only if `chatter` is run that often.
-- A dispatch call is what someone told a dispatcher, not a confirmed crime, and most end without a report. Only the last 30 days are shown, only for the home neighborhood, and only the call types that describe a possible crime (the table in [pipeline/dispatch.py](pipeline/dispatch.py)). The log has no coordinates, so a call's neighborhood is SDPD's own label (decision 2 cannot be applied to it) and a call is drawn only on a block that already has an offense on record (114 of 117 in North Park when this was written). The log runs about two days behind.
+- The chatter filter is keyword rules, and a story is matched to a neighborhood by name. It misses some relevant posts and keeps a few irrelevant ones, more of them where the name is also a place somewhere else (Sacramento has an Oak Park, the Bay Area a Burlingame). Twelve of SDPD's names are too ordinary to search for at all (`CHATTER_SKIP` in [pipeline/config.py](pipeline/config.py)); those neighborhoods get their police calls, and stories that use a wider name such as City Heights. Coverage is uneven: when this was written the typical neighborhood had about 40 stories, Pacific Beach had 178, and ten had none. The number of posts says nothing about the amount of crime.
+- Chatter history is thin. Google News returns at most 100 headlines for a name (`--backfill` searches the names that fill that one half-year at a time, which recovers the notable older events, not everything), Reddit's search returns the 100 newest posts with a crime word (about a month of r/sandiego; `--backfill` reaches back about three months, and a year or two for posts that name a neighborhood), and an outlet's own feed holds only its last few days. So run `chatter` at least once a month, and weekly if the outlets' feeds are to add anything.
+- A dispatch call is what someone told a dispatcher, not a confirmed crime, and most end without a report. Only the last 30 days are shown, and only the call types that describe a possible crime (the table in [pipeline/dispatch.py](pipeline/dispatch.py)). The log has no coordinates, so a call's neighborhood is SDPD's own label (decision 2 cannot be applied to it) and a call is drawn only on a block that already has an offense on record: 89% of calls across the city when this was written, 114 of 117 in North Park. The log runs about two days behind.
 - Nextdoor, Facebook groups, Threads and X are not sources. None of them has a public feed: posts sit behind a login, and their APIs are closed, paid, or approval-only. Reading them would mean scraping with a personal account, which breaks their terms and breaks whenever the site changes.
 - The outlook is the past year's level adjusted for season. It describes what "no change" would look like and does not predict events.
 

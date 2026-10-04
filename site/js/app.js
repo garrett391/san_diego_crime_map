@@ -35,11 +35,11 @@ function el(tag, className, text, parent) {
 }
 
 const state = { beat: null, range: '365', sev: null, cat: null, mode: 'dots', chatterKind: 'all', chatterShown: 12 };
-const data = { meta: null, city: null, beats: null, chatter: null, dispatch: null, hoods: new Map() };
+const data = { meta: null, city: null, beats: null, hoods: new Map(), feeds: new Map() };
 let ctx = null;
 let map = null;
 let hoodInfo = null;      // Map(beat -> entry of meta.hoods)
-const current = { beat: null, drawn: false, hood: null, mask: null, range: null };   // what is on screen
+const current = { beat: null, drawn: false, hood: null, feed: null, mask: null, range: null };   // what is on screen
 
 // ---- loading -------------------------------------------------------------------------------------
 
@@ -52,6 +52,17 @@ async function json(path) {
 async function loadHood(beat) {
   if (!data.hoods.has(beat)) data.hoods.set(beat, await json(`data/hood/${beat}.json`));
   return data.hoods.get(beat);
+}
+
+// A neighborhood's unverified layers: news and Reddit stories, and police dispatch calls. Either
+// is null when the pipeline has not produced it, and the rest of the page works without them.
+async function loadFeed(beat) {
+  if (!data.feeds.has(beat)) {
+    const [chatter, dispatch] = await Promise.all(
+      ['chatter', 'dispatch'].map((kind) => json(`data/${kind}/${beat}.json`).catch(() => null)));
+    data.feeds.set(beat, { stories: chatter && chatter.stories, dispatch });
+  }
+  return data.feeds.get(beat);
 }
 
 // ---- state <-> URL -------------------------------------------------------------------------------
@@ -368,12 +379,15 @@ function incidentList(hood, indices, limit = 40) {
   return list;
 }
 
-// Police dispatch calls for the home neighborhood. A call's map point is its block's, so several
-// calls can share one spot; `spot` is that point as "x,y".
+// Police dispatch calls for the neighborhood on screen. A call's map point is its block's, so
+// several calls can share one spot; `spot` is that point as "x,y".
 function callsInRange(spot) {
-  if (!data.dispatch || state.beat !== data.meta.home_beat) return [];
-  return data.dispatch.calls.filter((c) => c.day > current.range.after && (!spot || (c.x !== null && `${c.x},${c.y}` === spot)));
+  const { dispatch } = current.feed;
+  if (!dispatch) return [];
+  return dispatch.calls.filter((c) => c.day > current.range.after && (!spot || (c.x !== null && `${c.x},${c.y}` === spot)));
 }
+
+const callsSince = () => dayLabel(current.feed.dispatch.first, { year: false });
 
 const plural = (n, word) => `${F.int(n)} ${word}${n === 1 ? '' : 's'}`;
 const dayLabel = (iso, options) => F.date(new Date(`${iso}T00:00:00Z`), options);
@@ -403,7 +417,7 @@ function openPlace(p, lngLat) {
   const calls = callsInRange(`${place[1]},${place[2]}`);
   if (calls.length) {
     reports.classList.add('short');                  // two lists have to fit inside the map
-    el('div', 'pop-sub pop-more', `${plural(calls.length, 'police call')} here since ${dayLabel(data.dispatch.first, { year: false })}, not confirmed crimes:`, node);
+    el('div', 'pop-sub pop-more', `${plural(calls.length, 'police call')} here since ${callsSince()}, not confirmed crimes:`, node);
     node.appendChild(callList(calls)).classList.add('short');
   }
   map.popup(lngLat || [place[1] / 1e5, place[2] / 1e5], node);
@@ -414,13 +428,13 @@ function openCalls(spot, lngLat) {
   if (!calls.length || !map) return;
   const node = el('div');
   el('div', 'pop-title', calls[0].place, node);
-  el('div', 'pop-sub', `${plural(calls.length, 'police call')} since ${dayLabel(data.dispatch.first, { year: false })}. A call is what someone reported, not a confirmed crime.`, node);
+  el('div', 'pop-sub', `${plural(calls.length, 'police call')} since ${callsSince()}. A call is what someone reported, not a confirmed crime.`, node);
   node.appendChild(callList(calls));
   map.popup(lngLat || [calls[0].x / 1e5, calls[0].y / 1e5], node);
 }
 
 function openStory(id, lngLat) {
-  const story = data.chatter && data.chatter.stories.find((s) => s.id === id);
+  const story = (current.feed.stories || []).find((s) => s.id === id);
   if (!story || !map) return;
   const node = el('div');
   el('div', 'pop-sub', `Unverified · ${story.outlet} · ${F.date(new Date(`${story.date}T00:00:00Z`))}`, node);
@@ -462,10 +476,7 @@ function renderExplore(hood, mask) {
       properties: { p, n: e.n, w: Math.sqrt(e.n / busiest), sev: e.sev.findIndex((v) => v > 0) },
     });
   }
-  const isHome = state.beat === data.meta.home_beat;
-  const pins = isHome && data.chatter
-    ? data.chatter.stories.filter((s) => s.where && s.day > range.after && s.day <= range.through)
-    : [];
+  const pins = (current.feed.stories || []).filter((s) => s.where && s.day > range.after && s.day <= range.through);
   const spots = new Map();                           // "x,y" -> a police call there
   for (const c of callsInRange()) if (c.x !== null) spots.set(`${c.x},${c.y}`, c);
   if (map) {
@@ -506,7 +517,7 @@ function renderExplore(hood, mask) {
   if (spots.size) {
     const row = el('div', 'row', null, legend);
     el('span', 'ring dot', null, row);
-    el('span', null, `Police call since ${dayLabel(data.dispatch.first, { year: false })}, unverified`, row);
+    el('span', null, `Police call since ${callsSince()}, unverified`, row);
   }
 
   // by type, with the year-over-year change where the period allows one
@@ -624,6 +635,7 @@ function feedStory(li, s) {
   const meta = el('div', 'feed-meta', null, li);
   el('span', null, dayLabel(s.date), meta);
   el('span', null, s.more.length ? `${s.outlet} +${s.more.length} more` : s.outlet, meta);
+  if (s.area) el('span', null, s.area, meta).title = `The story says ${s.area}, the wider area this neighborhood is part of.`;
   for (const t of s.tags) el('span', 'tag', TAGS[t] || t, meta);
   const a = el('a', 'feed-title', s.title, li);
   a.href = s.url;
@@ -666,34 +678,36 @@ function renderChatter() {
   const more = $('chatter-more');
   list.replaceChildren();
   $('chatter-filter').replaceChildren();
-  const stories = data.chatter ? data.chatter.stories : [];
+  const { dispatch } = current.feed;
+  const stories = current.feed.stories || [];
+  section.hidden = !current.feed.stories && !dispatch;      // the pipeline has collected neither
   const days = new Map();                            // date -> that day's police calls, newest first
-  for (const c of data.dispatch ? data.dispatch.calls : []) {
+  for (const c of dispatch ? dispatch.calls : []) {
     if (!days.has(c.date)) days.set(c.date, []);
     days.get(c.date).push(c);
   }
   if (!stories.length && !days.size) {
-    section.hidden = true;
-    return;
-  }
-  section.hidden = false;
-  if (state.beat !== data.meta.home_beat) {
     more.hidden = true;
-    el('li', 'feed-excerpt', `News, Reddit posts and police calls are collected for ${hoodInfo.get(data.meta.home_beat).name} only. `
-      + 'To follow a different neighborhood, change HOME_BEAT and CHATTER_PLACES in pipeline/config.py.', list);
+    el('li', 'feed-excerpt', `Nothing for ${hoodInfo.get(state.beat).name}. No collected news story or Reddit post names it`
+      + `${dispatch ? `, and police logged no call about a possible crime there in the ${dispatch.days} days to ${dayLabel(dispatch.through)}` : ''}.`, list);
     return;
   }
-  const kinds = CHATTER_KINDS.filter((k) => k.id !== 'dispatch' || days.size);
-  segmented(el('div', 'segmented', null, $('chatter-filter')), kinds, state.chatterKind, (id) => {
-    state.chatterKind = id;
-    state.chatterShown = 12;
-    renderChatter();
-  });
-  // Newest day first. A day's police calls are one entry, after that day's stories.
-  const entries = [
+  const everything = [
     ...stories.map((s) => ({ kind: s.kind, date: s.date, story: s })),
     ...[...days].map(([date, calls]) => ({ kind: 'dispatch', date, calls })),
-  ].filter((e) => state.chatterKind === 'all' || e.kind === state.chatterKind)
+  ];
+  // Offer only the kinds this neighborhood has, and no choice at all when it has just one.
+  const kinds = CHATTER_KINDS.filter((k) => k.id === 'all' || everything.some((e) => e.kind === k.id));
+  if (!kinds.some((k) => k.id === state.chatterKind)) state.chatterKind = 'all';
+  if (kinds.length > 2) {
+    segmented(el('div', 'segmented', null, $('chatter-filter')), kinds, state.chatterKind, (id) => {
+      state.chatterKind = id;
+      state.chatterShown = 12;
+      renderChatter();
+    });
+  }
+  // Newest day first. A day's police calls are one entry, after that day's stories.
+  const entries = everything.filter((e) => state.chatterKind === 'all' || e.kind === state.chatterKind)
     .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (a.kind === 'dispatch') - (b.kind === 'dispatch')));
   for (const e of entries.slice(0, state.chatterShown)) {
     const li = el('li', null, null, list);
@@ -749,17 +763,26 @@ function renderMethod() {
       + 'The range is where 9 in 10 past months actually landed when the same rule was applied to this neighborhood’s own history. It says what “no change” would look like; it does not predict events.', d);
   });
   block('News, Reddit and police dispatch', (d) => {
-    el('p', null, 'Headlines come from Google News and local outlets’ own feeds, and posts from Reddit’s public feeds, kept when they mention the neighborhood and read like a crime or police-activity report. '
-      + 'A simple keyword filter makes that call, so expect some misses and a few wrong picks. Posts are unverified, a post is placed on the map only when it names an intersection or block, '
+    el('p', null, 'Headlines come from Google News and local outlets’ own feeds, and posts from Reddit’s public feeds, kept when they name the neighborhood (or were posted in its own subreddit) and read like a crime or police-activity report. '
+      + 'A story that names a wider area, such as City Heights or Clairemont, is listed under every neighborhood in that area. '
+      + 'A simple keyword filter makes these calls, so expect some misses and a few wrong picks, more of them for neighborhoods whose names are also ordinary words or places elsewhere. '
+      + 'Posts are unverified, a post is placed on the map only when it names an intersection or block, '
       + 'and the number of posts says nothing about the amount of crime. No usernames are stored.', d);
-    const calls = data.dispatch;
-    if (!calls) return;
-    el('p', null, `Police calls come from SDPD’s dispatch log (calls for service), which the city publishes about two days behind. This page lists the ${calls.days} days to ${dayLabel(calls.through)} `
-      + `for ${hoodInfo.get(calls.beat).name}: ${F.int(calls.calls.length)} of the ${F.int(calls.logged)} calls logged there. The rest were about something other than a possible crime `
-      + '(noise, parking, welfare checks, traffic stops, alarms) or were cancelled, duplicates or unfounded. '
-      + 'A call is what someone told a dispatcher, not a confirmed crime, and most end without a report. “Reported afterwards” means the caller found out later instead of seeing it happen. '
-      + 'Calls are never added to the counts on this page, and their place on the map is the block or intersection, not the address.', d);
+    callsNote = el('p', null, null, d);
   });
+}
+
+let callsNote = null;     // the one paragraph of the method section that is about the neighborhood on screen
+
+function renderCallsNote() {
+  const calls = current.feed.dispatch;
+  callsNote.hidden = !calls;
+  if (!calls) return;
+  callsNote.textContent = `Police calls come from SDPD’s dispatch log (calls for service), which the city publishes about two days behind. This page lists the ${calls.days} days to ${dayLabel(calls.through)} `
+    + `for ${hoodInfo.get(calls.beat).name}: ${F.int(calls.calls.length)} of the ${F.int(calls.logged)} calls logged there. The rest were about something other than a possible crime `
+    + '(noise, parking, welfare checks, traffic stops, alarms) or were cancelled, duplicates or unfounded. '
+    + 'A call is what someone told a dispatcher, not a confirmed crime, and most end without a report. “Reported afterwards” means the caller found out later instead of seeing it happen. '
+    + 'Calls are never added to the counts on this page, and their place on the map is the block or intersection, not the address.';
 }
 
 // ---- main loop -----------------------------------------------------------------------------------
@@ -772,8 +795,10 @@ async function update() {
   writeHash();
   const beat = state.beat;
   const beatChanged = current.beat !== beat;
-  const hood = await loadHood(beat);
+  const [hood, feed] = await Promise.all([loadHood(beat), loadFeed(beat)]);
   if (beat !== state.beat) return;                 // a newer selection overtook this one
+  current.feed = feed;
+  if (beatChanged) state.chatterShown = 12;
 
   const mask = S.offenseMask(ctx, state.cat, state.sev);
   const cmask = S.cellMask(ctx, state.cat, state.sev);
@@ -788,6 +813,7 @@ async function update() {
   renderNearby(cmask);
   renderChatter();
   renderMethod();
+  renderCallsNote();
   main.setAttribute('aria-busy', 'false');
 }
 
@@ -800,8 +826,6 @@ async function start() {
     console.error(err);
     return;
   }
-  data.chatter = await json('data/chatter.json').catch(() => null);
-  data.dispatch = await json('data/dispatch.json').catch(() => null);
   ctx = S.context(data.meta);
   hoodInfo = new Map(data.meta.hoods.map((h) => [h.beat, h]));
   readHash();

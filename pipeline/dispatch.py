@@ -1,8 +1,8 @@
-"""Police dispatch: what SDPD was called to in the home neighborhood over the last few weeks.
+"""Police dispatch: what SDPD was called to in each neighborhood over the last few weeks.
 
 The city publishes every call for service (911 and non-emergency calls, plus stops officers start
 themselves) as one CSV per year, rewritten daily and about two days behind. `fetch` downloads it
-and `build` turns the home neighborhood's recent calls into dispatch.json.
+and `build` turns each neighborhood's recent calls into dispatch/<beat>.json.
 
 A call is what someone told a dispatcher, not a confirmed crime, and most end without a report.
 So calls are shown with the news and Reddit posts as unverified context and are never added to
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from . import config
@@ -129,10 +129,11 @@ def place(row: dict, gazetteer: Gazetteer | None) -> dict:
     return {"place": label, "x": None, "y": None}
 
 
-def load_calls(data_dir: Path, beat: int) -> tuple[dict[str, dict], date | None]:
-    """Every row logged for one beat, by incident number, and the day the log runs through."""
-    rows: dict[str, dict] = {}
-    newest = ""
+def load_calls(data_dir: Path, days: int) -> tuple[dict[str, dict], date | None]:
+    """Every row from the last `days` days of the log, by incident number, and the day the log runs
+    through. The window ends with the newest call anywhere in the city."""
+    recent: dict[str, list[dict]] = {}          # day -> its rows; a day is dropped once the window moves past it
+    newest = first = ""
     tomorrow = (date.today() + timedelta(days=1)).isoformat()      # a mistyped year must not set the window
     for path in sorted(data_dir.glob(CALLS_GLOB)):
         with open(path, newline="", encoding="utf-8-sig") as f:
@@ -141,70 +142,79 @@ def load_calls(data_dir: Path, beat: int) -> tuple[dict[str, dict], date | None]
             if missing := COLUMNS - set(head):
                 print(f"  dispatch: {path.name} skipped, it has no {', '.join(sorted(missing))} column")
                 continue
-            when, where, key = head.index("date_time"), head.index("beat"), head.index("incident_num")
+            when = head.index("date_time")
             for row in reader:
                 if len(row) != len(head):
                     continue
                 day = row[when][:10]
                 if newest < day <= tomorrow:
                     try:
-                        date.fromisoformat(day)
+                        first = (date.fromisoformat(day) - timedelta(days=days - 1)).isoformat()
                     except ValueError:
                         continue
                     newest = day
-                if row[where].strip() == str(beat):
-                    rows.setdefault(row[key], dict(zip(head, row)))
+                    for old in [d for d in recent if d < first]:
+                        del recent[old]
+                if first <= day <= newest:
+                    recent.setdefault(day, []).append(dict(zip(head, row)))
+    rows: dict[str, dict] = {}
+    for day in sorted(recent):
+        for row in recent[day]:
+            rows.setdefault(row["incident_num"], row)
     return rows, date.fromisoformat(newest) if newest else None
 
 
-def export(data_dir: Path = config.DATA_DIR, out_dir: Path = config.OUT_DIR, home_beat: int = config.HOME_BEAT,
-           days: int = config.DISPATCH_DAYS) -> dict | None:
-    """Write dispatch.json: the home neighborhood's possible-crime calls from the last `days` days
-    of the log, newest first. Returns None, and writes nothing, when no call log has been fetched."""
-    rows, through = load_calls(data_dir, home_beat)
+def export(data_dir: Path, out_dir: Path, beats: list[int], days: int = config.DISPATCH_DAYS) -> dict[int, dict] | None:
+    """Write dispatch/<beat>.json for each of `beats`: its possible-crime calls from the last `days`
+    days of the log, newest first. Returns what was written, by beat, or None (writing nothing)
+    when no call log has been fetched."""
+    rows, through = load_calls(data_dir, days)
     if through is None:
         return None
     first = through - timedelta(days=days - 1)
 
-    gazetteer = None
-    hood_file = out_dir / "hood" / f"{home_beat}.json"
-    if hood_file.exists():
-        gazetteer = Gazetteer(json.loads(hood_file.read_text(encoding="utf-8"))["places"])
-
-    calls, logged = [], 0
+    logged = dict.fromkeys(beats, 0)            # every call in the window, for scale
+    kept: dict[int, list] = {beat: [] for beat in beats}
     for incident, row in rows.items():
         try:
             when = datetime.fromisoformat(row["date_time"].strip())
+            beat = int(row["beat"])
         except ValueError:
             continue
-        if not first <= when.date() <= through:
+        if beat not in kept:
             continue
-        logged += 1
+        logged[beat] += 1
         known = describe(row["call_type"].strip().upper())
         disposition = row["disposition"].strip().upper()
-        if not known or disposition in DROPPED:
-            continue
-        calls.append({
+        if known and disposition not in DROPPED:
+            kept[beat].append((incident, when, known, OUTCOMES.get(disposition[:1]), row))
+
+    written = {}
+    for beat, found in kept.items():
+        gazetteer = None
+        hood_file = out_dir / "hood" / f"{beat}.json"
+        if found and hood_file.exists():
+            gazetteer = Gazetteer(json.loads(hood_file.read_text(encoding="utf-8"))["places"])
+        calls = [{
             "id": incident,
             "date": when.date().isoformat(),
             "day": (when.date() - EPOCH).days,
             "time": when.strftime("%H:%M"),
-            "what": known[0],
-            "tag": known[1],
-            "outcome": OUTCOMES.get(disposition[:1]),
+            "what": what,
+            "tag": tag,
+            "outcome": outcome,
             **place(row, gazetteer),
-        })
-    calls.sort(key=lambda c: (c["date"], c["time"], c["id"]), reverse=True)
-
-    result = {
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "beat": home_beat,
-        "days": days,
-        "first": first.isoformat(),
-        "through": through.isoformat(),
-        "logged": logged,           # every call in the window, for scale
-        "calls": calls,
-    }
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "dispatch.json").write_text(json.dumps(result, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
-    return result
+        } for incident, when, (what, tag), outcome, row in found]
+        calls.sort(key=lambda c: (c["date"], c["time"], c["id"]), reverse=True)
+        written[beat] = {
+            "beat": beat,
+            "days": days,
+            "first": first.isoformat(),
+            "through": through.isoformat(),
+            "logged": logged[beat],
+            "calls": calls,
+        }
+        path = out_dir / "dispatch" / f"{beat}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(written[beat], separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    return written

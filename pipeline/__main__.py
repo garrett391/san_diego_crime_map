@@ -17,15 +17,16 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("build", help="turn ./data into the JSON the dashboard reads")
 
-    p = sub.add_parser("chatter", help="collect news and Reddit posts about the home neighborhood")
+    p = sub.add_parser("chatter", help="collect news and Reddit posts about every neighborhood (needs a build first)")
     p.add_argument("--offline", action="store_true", help="re-score what is already stored, fetch nothing")
-    p.add_argument("--backfill", action="store_true", help="also search Google News for every half-year since 2020 (run once)")
+    p.add_argument("--backfill", action="store_true",
+                   help="also dig for older items: Google News by half-year since 2020, Reddit by neighborhood name (run once)")
 
     p = sub.add_parser("serve", help="open the dashboard at http://localhost:8000")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
 
-    sub.add_parser("refresh", help="fetch + chatter + build, in that order")
+    sub.add_parser("refresh", help="fetch + build + chatter, in that order")
 
     args = parser.parse_args(argv)
 
@@ -58,13 +59,15 @@ def main(argv: list[str] | None = None) -> int:
         failed = [n for n, r in results.items() if r.startswith("failed")]
         if failed:
             print(f"Some downloads failed ({', '.join(failed)}); building from the copies already on disk.")
-        print("Collecting chatter...")
+        print("Building...")
+        build()
+        # After the build, which is what knows the neighborhoods' names; it has already put what
+        # was stored on the page, and this adds what is new.
+        print("Collecting chatter (several minutes)...")
         try:
             collect()
         except Exception as e:  # noqa: BLE001 - chatter is optional; never block the official data
             print(f"Chatter collection failed ({e}); keeping what was already stored.")
-        print("Building...")
-        build()
         return 0
 
     return 2

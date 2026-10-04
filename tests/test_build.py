@@ -83,10 +83,28 @@ def built(tmp_path_factory):
             writer.writerow(COLUMNS)
             writer.writerows(rows)
 
-    meta = b.build(data_dir=data, out_dir=out, home_beat=101, chatter_store=None)
+    # The unofficial layers: a dispatch log with a burglary call in 101 and a noise complaint in 102,
+    # and a chatter store with one headline that names 101 and one that names nowhere.
+    with open(data / "pd_calls_for_service_2026_datasd.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_ALL)
+        writer.writerow(["incident_num", "date_time", "address_number_primary", "address_dir_primary", "address_road_primary",
+                         "address_sfx_primary", "address_road_intersecting", "address_sfx_intersecting", "call_type",
+                         "disposition", "beat"])
+        writer.writerow(["call-1", "2026-06-29 21:15:00.000", "3000", "", "UNIVERSITY", "AVE", "", "", "459", "R", "101"])
+        writer.writerow(["call-2", "2026-06-28 10:00:00.000", "55", "", "ELM", "ST", "", "", "415N", "K", "102"])
+    store = data / "items.jsonl"
+    headline = {"source": "news", "outlet": "Patch", "url": "https://example.test/x", "published": "2026-06-20T15:00:00+00:00", "text": ""}
+    store.write_text("".join(json.dumps({**headline, "id": title, "title": title}) + "\n" for title in
+                             ("Man stabbed in Alpha Heights", "Man stabbed outside bar")), encoding="utf-8")
+
+    with pytest.MonkeyPatch.context() as settings:       # the tiny city has none of San Diego's names
+        settings.setattr(b.config, "CHATTER_ALIASES", {})
+        settings.setattr(b.config, "CHATTER_SKIP", [])
+        settings.setattr(b.config, "CHATTER_SUBREDDITS", {})
+        meta = b.build(data_dir=data, out_dir=out, home_beat=101, chatter_store=store)
     load = lambda name: json.loads((out / name).read_text(encoding="utf-8"))  # noqa: E731
     return {"meta": meta, "city": load("city.json"), "beats": load("beats.geojson"),
-            "h101": load("hood/101.json"), "h102": load("hood/102.json"), "out": out}
+            "h101": load("hood/101.json"), "h102": load("hood/102.json"), "out": out, "load": load}
 
 
 def test_basics(built):
@@ -167,6 +185,17 @@ def test_city_monthly_matches_offense_count(built):
     city = built["city"]
     assert city["months"][0] == "2020-01" and city["months"][-1] == "2026-06"
     assert sum(sum(row) for row in city["monthly"]) == built["meta"]["qa"]["countable_offenses"]
+
+
+def test_the_unofficial_layers_get_a_file_per_neighborhood(built):
+    load = built["load"]
+    assert [s["title"] for s in load("chatter/101.json")["stories"]] == ["Man stabbed in Alpha Heights"]
+    assert load("chatter/102.json") == {"beat": 102, "stories": []}
+    # the call is placed on the block the neighborhood's offense records already know
+    (burglary,) = load("dispatch/101.json")["calls"]
+    assert (burglary["what"], burglary["place"], burglary["x"], burglary["y"]) == ("Burglary", "3000 block University Ave", -11715000, 3275000)
+    # a noise complaint is logged but not listed
+    assert load("dispatch/102.json")["calls"] == [] and load("dispatch/102.json")["logged"] == 1
 
 
 def test_pretty_address():
