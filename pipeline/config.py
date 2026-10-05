@@ -31,6 +31,21 @@ MIN_GEOCODE_SCORE = 90.0
 # Catches addresses on the waterfront and in slivers between polygons.
 SNAP_DEGREES = 0.001
 
+# --- residents (for rates per 1,000 residents) ---------------------------------------------
+
+# 2020 Census count for every census block in San Diego County, kept in the repository because the
+# counts never change. `python -m pipeline census` makes the file again (see pipeline/census.py).
+CENSUS_YEAR = 2020
+CENSUS_BLOCKS = ROOT / "census" / "blocks_2020.csv"
+CENSUS_URL = ("https://www2.census.gov/programs-surveys/decennial/2020/data/"
+              "01-Redistricting_File--PL_94-171/California/ca2020.pl.zip")
+CENSUS_COUNTY = "073"             # San Diego County
+
+# A neighborhood with fewer residents than this gets no per-resident rate. Most of them are parks,
+# or stadium and shopping districts, where nearly everyone is a visitor and dividing by the few
+# residents says nothing (Balboa Park would come out at 1,700 offenses per 1,000 residents).
+MIN_RESIDENTS = 1000
+
 # --- chatter (news, Reddit and police dispatch) --------------------------------------------
 
 # News and Reddit posts are collected for every neighborhood. A story belongs to a neighborhood

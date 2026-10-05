@@ -18,6 +18,18 @@ export function date(d, { year = true } = {}) {
   return year ? `${text}, ${d.getUTCFullYear()}` : text;
 }
 
+/** A rate per 1,000 residents: "41", and one decimal under ten ("3.8") so small rates still differ. */
+export function rate(r) {
+  if (r > 0 && r < 0.05) return 'under 0.1';
+  return r >= 9.95 ? int(r) : r.toFixed(1);
+}
+
+/** 1 -> "1st", 22 -> "22nd", 113 -> "113th" */
+export function ordinal(n) {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th';
+  return `${n}${suffix}`;
+}
+
 /** "17:05" -> "5:05 pm" */
 export function clock(hhmm) {
   const [h, m] = hhmm.split(':').map(Number);

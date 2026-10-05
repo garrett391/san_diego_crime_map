@@ -112,6 +112,15 @@ test('compareScope sums the selected cells of the pipeline table', () => {
   assert.equal(S.compareScope(city, '999', 365, S.cellMask(ctx, null, null)).cur, 0);
 });
 
+test('perThousand: a rate only where enough people live, and standing among the rates there are', () => {
+  assert.equal(S.perThousand(1575, { residents: 38572, rated: true }).toFixed(1), '40.8');
+  assert.equal(S.perThousand(437, { residents: 256, rated: false }), null);    // a park: nearly everyone is a visitor
+  assert.equal(S.perThousand(0, { residents: 5000, rated: true }), 0);
+  assert.equal(S.perThousand(10, { residents: null, rated: false }), null);    // the pipeline had no census file
+  assert.deepEqual(S.standing(40, [300, null, 40, 12, 55, null]), { place: 3, of: 4 });
+  assert.deepEqual(S.standing(300, [300, 300, 40]), { place: 1, of: 3 });     // a tie shares the better place
+});
+
 test('compareByCategory adds up to compare', () => {
   const ctx = S.context(meta());
   const h = hood([

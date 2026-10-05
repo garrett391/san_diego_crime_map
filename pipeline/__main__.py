@@ -28,6 +28,8 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("refresh", help="fetch + build + chatter, in that order")
 
+    sub.add_parser("census", help="make census/blocks_2020.csv again (it is in the repository; an 80 MB download)")
+
     args = parser.parse_args(argv)
 
     if args.command == "fetch":
@@ -43,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "chatter":
         from .chatter import collect
         collect(offline=args.offline, backfill=args.backfill)
+        return 0
+
+    if args.command == "census":
+        from .census import download
+        download()
         return 0
 
     if args.command == "serve":

@@ -97,11 +97,22 @@ def built(tmp_path_factory):
     store.write_text("".join(json.dumps({**headline, "id": title, "title": title}) + "\n" for title in
                              ("Man stabbed in Alpha Heights", "Man stabbed outside bar")), encoding="utf-8")
 
+    # Census blocks: three in 101 (one of them mostly a dorm), one big one in 102, and two that are
+    # not in the city at all, one of them inside the county beat that reuses the number 101.
+    blocks = data / "blocks.csv"
+    blocks.write_text("block,lat,lon,people,in_quarters\n"
+                      "b1,32.75,-117.15,400,0\n"
+                      "b2,32.76,-117.16,500,300\n"
+                      "b3,32.74,-117.14,400,0\n"
+                      "b4,32.75,-117.05,1500,0\n"
+                      "b5,33.50,-116.00,999,0\n"
+                      "b6,32.75,-116.45,5000,0\n", encoding="utf-8")
+
     with pytest.MonkeyPatch.context() as settings:       # the tiny city has none of San Diego's names
         settings.setattr(b.config, "CHATTER_ALIASES", {})
         settings.setattr(b.config, "CHATTER_SKIP", [])
         settings.setattr(b.config, "CHATTER_SUBREDDITS", {})
-        meta = b.build(data_dir=data, out_dir=out, home_beat=101, chatter_store=store)
+        meta = b.build(data_dir=data, out_dir=out, home_beat=101, chatter_store=store, census_blocks=blocks)
     load = lambda name: json.loads((out / name).read_text(encoding="utf-8"))  # noqa: E731
     return {"meta": meta, "city": load("city.json"), "beats": load("beats.geojson"),
             "h101": load("hood/101.json"), "h102": load("hood/102.json"), "out": out, "load": load}
@@ -129,6 +140,18 @@ def test_only_sdpd_beats_and_names(built):
     assert {f["properties"]["beat"] for f in built["beats"]["features"]} == {101, 102}
     # the county polygon that shares number 101 must not have been merged in
     assert hoods[101]["bbox"][2] < -117.0
+
+
+def test_residents_are_the_blocks_inside_each_neighborhood(built):
+    meta = built["meta"]
+    hoods = {h["beat"]: h for h in meta["hoods"]}
+    assert hoods[101]["residents"] == 400 + 400 + (500 - 300)     # the dorm's 300 are left out
+    assert hoods[102]["residents"] == 1500
+    assert meta["city_residents"] == 2500                         # nothing from outside the city
+    assert (meta["qa"]["census_people"], meta["qa"]["census_left_out"]) == (2800, 300)
+    assert meta["census_year"] == b.config.CENSUS_YEAR and meta["min_residents"] == b.config.MIN_RESIDENTS == 1000
+    # 102 has residents enough, but they are all in one block, so its count is too rough for a rate
+    assert hoods[101]["rated"] and not hoods[102]["rated"]
 
 
 def test_neighborhood_assignment(built):

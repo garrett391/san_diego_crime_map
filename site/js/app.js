@@ -130,6 +130,9 @@ function delta(parent, cmp, basis = 'than the year before') {
   }
 }
 
+/** The city as a place with residents, in the shape of an entry of meta.hoods (see S.perThousand). */
+const cityPlace = () => ({ residents: data.meta.city_residents, rated: data.meta.city_residents !== null });
+
 function segmented(root, options, selected, onPick) {
   root.replaceChildren();
   for (const o of options) {
@@ -243,6 +246,22 @@ function renderSummary(hood, mask, cmask) {
   $('hero-label').textContent = `Reported offenses in ${name}${filtered}, 12 months to ${to}`;
   $('hero-value').textContent = F.int(year.cur);
   delta($('hero-delta'), year, 'than the 12 months before');
+  // The same count per resident, beside the city's rate and this neighborhood's place among all that have one.
+  const home = hoodInfo.get(state.beat);
+  const cityRate = S.perThousand(cityYear.cur, cityPlace());
+  const rateLine = $('hero-rate');
+  rateLine.replaceChildren();
+  rateLine.hidden = home.residents === null;        // the pipeline had no census file
+  const rate = S.perThousand(year.cur, home);
+  if (rate !== null) {
+    const rank = S.standing(rate, data.meta.hoods.map((h) => S.perThousand(S.compareScope(data.city, String(h.beat), 365, cmask).cur, h)));
+    el('strong', null, `${F.rate(rate)} per 1,000 residents`, rateLine);
+    el('span', null, `City as a whole: ${F.rate(cityRate)}. ${F.ordinal(rank.place)} highest of ${rank.of} neighborhoods.`, rateLine);
+  } else if (home.residents !== null) {
+    el('span', null, home.residents >= data.meta.min_residents
+      ? 'No rate per resident: most of the people counted here are in one census block, so the count is too rough.'
+      : `Too few residents (${F.int(home.residents)}) for a rate per resident.`, rateLine);
+  }
   const perWeek = year.cur / (365 / 7);
   $('hero-note').textContent = `About ${perWeek >= 10 ? F.int(perWeek) : perWeek.toFixed(1)} a week. `
     + `Comparisons stop ${data.meta.settle_days} days short of today because recent reports are still arriving.`;
@@ -265,7 +284,8 @@ function renderSummary(hood, mask, cmask) {
   const recent = S.count(hood, mask, ctx.today - 30, ctx.today);
   tile('Last 30 days, so far', F.int(recent), null,
     'Still filling in. Reports take days to weeks to be approved, so this is not compared with anything yet.');
-  tile(`City of San Diego${filtered}, same 12 months`, F.int(cityYear.cur), (p) => delta(p, cityYear));
+  tile(`City of San Diego${filtered}, same 12 months`, F.int(cityYear.cur), (p) => delta(p, cityYear),
+    cityRate === null ? null : `${F.rate(cityRate)} per 1,000 residents.`);
 }
 
 function renderTrend(hood, mask, cmask) {
@@ -588,6 +608,13 @@ function renderExplore(hood, mask) {
 function renderNearby(cmask) {
   const home = hoodInfo.get(state.beat);
   const highMask = S.cellMask(ctx, state.cat, new Set([0]));
+  const counted = data.meta.city_residents !== null;        // false when the pipeline had no census file
+  const dash = { text: '–', dim: true };
+  // the two per-resident cells of a row, left off the table altogether when nobody was counted
+  const people = (n, place) => {
+    const rate = S.perThousand(n, place);
+    return counted ? [rate === null ? dash : F.rate(rate), F.int(place.residents)] : [];
+  };
   const row = (h) => {
     const scope = String(h.beat);
     const cmp = S.compareScope(data.city, scope, 365, cmask);
@@ -602,7 +629,7 @@ function renderNearby(cmask) {
     return {
       sort: cmp.cur,
       className: h.beat === state.beat ? 'is-home' : null,
-      cells: [nameCell, F.int(cmp.cur), h.sq_mi ? F.int(cmp.cur / h.sq_mi) : '–',
+      cells: [nameCell, F.int(cmp.cur), ...people(cmp.cur, h), h.sq_mi ? F.int(cmp.cur / h.sq_mi) : dash,
         F.int(S.compareScope(data.city, scope, 365, highMask).cur), change],
     };
   };
@@ -611,15 +638,19 @@ function renderNearby(cmask) {
   const cityChange = el('span');
   delta(cityChange, cityCmp, '');
   const cityRow = {
-    cells: ['City of San Diego', F.int(cityCmp.cur), { text: '–', dim: true },
+    cells: ['City of San Diego', F.int(cityCmp.cur), ...people(cityCmp.cur, cityPlace()), dash,
       F.int(S.compareScope(data.city, 'city', 365, highMask).cur), cityChange],
   };
   table($('nearby'),
-    [{ label: 'Neighborhood' }, { label: 'Offenses', num: true }, { label: 'Per sq. mile', num: true },
-      { label: 'High severity', num: true }, { label: 'Change from the year before' }],
+    [{ label: 'Neighborhood' }, { label: 'Offenses', num: true },
+      ...(counted ? [{ label: 'Per 1,000 residents', num: true }, { label: 'Residents', num: true }] : []),
+      { label: 'Per sq. mile', num: true }, { label: 'High severity', num: true }, { label: 'Change from the year before' }],
     [row(home), ...neighbors, cityRow]);
   $('nearby-sub').textContent = `12 months to ${F.date(S.dayToDate(ctx.settled, data.meta.epoch))}, with the filters above. `
-    + 'Busy commercial areas draw more reports than their size suggests; there are no population figures here.';
+    + (counted
+      ? `Residents are the ${data.meta.census_year} Census count; under ${F.int(data.meta.min_residents)} there is no rate. `
+        + 'Where many people visit (shops, bars, a beach) the rate runs high, because most of the people there live somewhere else.'
+      : 'Busy commercial areas draw more reports than their size suggests; there are no population figures here.');
 }
 
 /** Scroll to a spot on the map and open what is there, widening the period first if it hides the pin. */
@@ -758,6 +789,17 @@ function renderMethod() {
       + `SDPD’s label and the address agree ${qa.label_matches_address_pct}% of the time, so totals here differ slightly from SDPD’s own dashboard. `
       + `${qa.mapped_pct}% of offenses can be drawn on the map. Addresses are rounded to the hundred-block, so a circle marks a block, never a building.`, d);
   });
+  if (meta.city_residents !== null) {
+    block('Rates per 1,000 residents', (d) => {
+      el('p', null, `Residents are the ${meta.census_year} Census count: ${F.int(meta.city_residents)} people across the city. The census counts by block, and a block belongs to the neighborhood its centre falls in. `
+        + `People living in barracks or on ships, in jails and in college dorms (${F.int(qa.census_left_out)}) are left out, because crime there is mostly recorded by another agency (the Navy, the Sheriff, campus police) and is not in SDPD’s reports.`, d);
+      el('p', null, 'A rate divides the offenses reported in a neighborhood by the people who live there, whoever the victim was. '
+        + 'Where many people come to work, shop, drink or swim (downtown, Mission Valley, Old Town, the beaches) it runs far above anything a resident experiences, so compare like with like. '
+        + `A neighborhood with fewer than ${F.int(meta.min_residents)} residents gets no rate at all; most of those are parks, or stadium and shopping districts. `
+        + 'Nor does one where a single census block holds more than half the residents, because the count then hangs on which side of the line that block’s centre falls.', d);
+      el('p', null, `The count is from ${meta.census_year}. Where a lot of housing has been built since, more people live there now and the true rate is lower than the one shown.`, d);
+    });
+  }
   block('The outlook', (d) => {
     el('p', null, 'The dashed columns take the average of the last 12 fully reported months and adjust it for the time of year, using the citywide seasonal pattern. '
       + 'The range is where 9 in 10 past months actually landed when the same rule was applied to this neighborhood’s own history. It says what “no change” would look like; it does not predict events.', d);

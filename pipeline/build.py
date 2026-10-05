@@ -9,6 +9,7 @@ Steps, each a function below:
   classify        attach the dashboard's category and severity to each offense
   load_beats      SDPD beat polygons (one beat = one neighborhood)
   assign_beats    decide which neighborhood each offense belongs to
+  census.residents  how many people live in each neighborhood (census.py), for per-resident rates
   export          write meta.json, city.json, beats.geojson and one file per neighborhood
 
 The unofficial layers are added last, one file per neighborhood each: chatter/ (chatter.py) and
@@ -26,7 +27,7 @@ from pathlib import Path
 
 import duckdb
 
-from . import categories, config
+from . import categories, census, config
 
 EPOCH = date(2020, 1, 1)        # "day" numbers in the output count from here
 SIMPLIFY_DEGREES = 0.00003      # about 3 m; shrinks the boundary file from 45 MB to ~0.2 MB
@@ -337,7 +338,7 @@ def city_monthly(con: duckdb.DuckDBPyConnection, through: date) -> dict:
     return {"months": months, "monthly": series}
 
 
-def export_beats(con: duckdb.DuckDBPyConnection, out_dir: Path) -> list[dict]:
+def export_beats(con: duckdb.DuckDBPyConnection, out_dir: Path, residents: dict[int, dict] | None) -> list[dict]:
     """Simplified boundaries for the map, plus the facts about each neighborhood for meta.json."""
     rows = con.execute(f"""
         WITH g AS (
@@ -371,6 +372,9 @@ def export_beats(con: duckdb.DuckDBPyConnection, out_dir: Path) -> list[dict]:
             "bbox": [round(x0, 5), round(y0, 5), round(x1, 5), round(y1, 5)],
             "neighbors": neighbors.get(beat, []),
             "n": totals.get(beat, 0),
+            "residents": residents[beat]["residents"] if residents else None,
+            # whether a per-resident rate is shown for it (census.has_rate)
+            "rated": bool(residents) and census.has_rate(residents[beat]["residents"], residents[beat]["biggest"]),
         })
     _write(out_dir / "beats.geojson", {"type": "FeatureCollection", "features": features})
     return hoods
@@ -421,7 +425,8 @@ def export_hoods(con: duckdb.DuckDBPyConnection, out_dir: Path, beats: list[int]
 
 
 def build(data_dir: Path = config.DATA_DIR, out_dir: Path = config.OUT_DIR,
-          home_beat: int = config.HOME_BEAT, chatter_store: Path | None = config.CHATTER_STORE) -> dict:
+          home_beat: int = config.HOME_BEAT, chatter_store: Path | None = config.CHATTER_STORE,
+          census_blocks: Path | None = config.CENSUS_BLOCKS) -> dict:
     started = time.monotonic()
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial;")
@@ -431,6 +436,10 @@ def build(data_dir: Path = config.DATA_DIR, out_dir: Path = config.OUT_DIR,
     qa.update(classify(con))
     qa["beats"] = load_beats(con, data_dir)
     qa.update(assign_beats(con))
+    residents = census.residents(con, census_blocks)
+    if residents:
+        qa["census_people"] = sum(r["residents"] + r["left_out"] for r in residents.values())
+        qa["census_left_out"] = sum(r["left_out"] for r in residents.values())
     through = finalize(con)
     qa["countable_offenses"] = con.execute("SELECT count(*) FROM final").fetchone()[0]
     qa["mapped_pct"] = round(100 * con.execute("SELECT avg((x IS NOT NULL)::INT) FROM final").fetchone()[0], 1)
@@ -439,7 +448,7 @@ def build(data_dir: Path = config.DATA_DIR, out_dir: Path = config.OUT_DIR,
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
 
-    hoods = export_beats(con, tmp)
+    hoods = export_beats(con, tmp, residents)
     if home_beat not in {h["beat"] for h in hoods}:
         raise SystemExit(f"HOME_BEAT {home_beat} is not an SDPD beat in {BEATS_FILE}")
 
@@ -473,6 +482,9 @@ def build(data_dir: Path = config.DATA_DIR, out_dir: Path = config.OUT_DIR,
         "windows": list(WINDOWS),
         "settle_days": SETTLE_DAYS,
         "year_days": YEAR,
+        "census_year": config.CENSUS_YEAR,
+        "min_residents": config.MIN_RESIDENTS,
+        "city_residents": sum(r["residents"] for r in residents.values()) if residents else None,
         "categories": [{"id": c, "label": label} for c, label in categories.CATEGORIES],
         "severities": [{"id": s, "label": label, "about": about} for s, label, about in categories.SEVERITIES],
         "offenses": offenses,
@@ -499,6 +511,12 @@ def build(data_dir: Path = config.DATA_DIR, out_dir: Path = config.OUT_DIR,
     if qa["unknown_codes"]:
         print(f"  note: offense codes not in categories.py (treated as low / public order): {qa['unknown_codes']}")
     print(f"  {home['name']}: {home['n']:,} offenses since {first_day}")
+    if residents:
+        print(f"  residents: {meta['city_residents']:,} ({config.CENSUS_YEAR} Census, less {qa['census_left_out']:,} in barracks, "
+              f"jails and dorms); {home['residents']:,} in {home['name']}; {sum(not h['rated'] for h in hoods)} neighborhoods "
+              f"get no per-resident rate (under {config.MIN_RESIDENTS:,} residents, or most of them in one census block)")
+    else:
+        print(f"  note: no per-resident rates, because {census_blocks} is missing. Run:  python -m pipeline census")
     if dispatch:
         calls = [c for d in dispatch.values() for c in d["calls"]]
         window = dispatch[home_beat]

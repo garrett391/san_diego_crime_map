@@ -46,7 +46,8 @@ button, select { font: inherit; color: inherit; }
   position: absolute; width: 1px; height: 1px; overflow: hidden;
   clip-path: inset(50%); white-space: nowrap;
 }
-.wrap { max-width: 1280px; margin: 0 auto; padding: 0 20px; }
+/* sides only: .wrap is also on <main> and the top bar, which set their own space above and below */
+.wrap { max-width: 1280px; margin: 0 auto; padding-inline: 20px; }
 [hidden] { display: none !important; }
 
 /* ---- top bar ---- */
@@ -111,6 +112,8 @@ figcaption { margin-top: 8px; }
 .hero { display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 22px; }
 .hero-label { color: var(--text-2); }
 .hero-value { font-size: 60px; font-weight: 600; line-height: 1; letter-spacing: -0.02em; }
+.hero-rate { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--text-2); font-size: 13px; }
+.hero-rate strong { color: var(--text); font-weight: 600; }
 .hero-note { color: var(--muted); font-size: 12px; margin-top: 6px; }
 .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); }
 .tile { display: flex; flex-direction: column; gap: 4px; }
@@ -253,8 +256,8 @@ tr.clickable:hover td { background: var(--wash); }
   #map { height: 62vh; min-height: 360px; }
 }
 @media (max-width: 560px) {
-  .wrap { padding: 0 16px; }
-  .top-row { flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 0; }
+  .wrap { padding-inline: 16px; }
+  .top-row { flex-direction: column; align-items: flex-start; gap: 4px; padding-block: 8px; }
   .asof { text-align: left; }
   #hood-select { max-width: 100%; }
   .hero-value { font-size: 48px; }

@@ -132,6 +132,21 @@ export function compareScope(city, scope, windowDays, cmask) {
   return { cur, prior, ...judge(cur, prior) };
 }
 
+/**
+ * Offenses for every 1,000 residents of a place ({ residents, rated }, as in meta.hoods). Null
+ * where the pipeline gives the place no rate: few people live in a park or a stadium district,
+ * nearly everyone there is a visitor, and dividing by the residents says nothing.
+ */
+export function perThousand(n, place) {
+  return place.rated && place.residents ? (n / place.residents) * 1000 : null;
+}
+
+/** Where a rate stands among all the rates there are (nulls are skipped): place 1 is the highest. */
+export function standing(rate, rates) {
+  const known = rates.filter((r) => r !== null);
+  return { place: 1 + known.filter((r) => r > rate).length, of: known.length };
+}
+
 /** Per category: this window vs the year before, compared the same way as compare(). */
 export function compareByCategory(hood, mask, ctx, windowDays) {
   const to = ctx.settled;
