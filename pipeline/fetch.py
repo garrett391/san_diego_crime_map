@@ -62,8 +62,12 @@ def is_current(local_size: int | None, known: dict, remote: dict) -> bool:
 
 
 def fetch_one(name: str, url: str, data_dir: Path, state: dict, force: bool = False) -> str:
-    """Bring one file up to date. Returns 'downloaded', 'unchanged' or 'missing'."""
+    """Bring one file up to date. Returns 'downloaded', 'unchanged' or 'missing'.
+
+    Either way the file's entry in `state` gets `checked_at`: when the local copy was last known
+    to match the city's. The dashboard counts from it to say how old its copy is (build.last_checked)."""
     dest = data_dir / name
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     try:
         with _request(url, "HEAD") as r:
             length = r.headers.get("Content-Length")
@@ -79,7 +83,7 @@ def fetch_one(name: str, url: str, data_dir: Path, state: dict, force: bool = Fa
 
     local_size = dest.stat().st_size if dest.exists() else None
     if not force and is_current(local_size, state.get(name, {}), remote):
-        state[name] = {**state.get(name, {}), **remote}
+        state[name] = {**state.get(name, {}), **remote, "checked_at": now}
         return "unchanged"
 
     part = dest.with_name(dest.name + ".part")
@@ -94,7 +98,7 @@ def fetch_one(name: str, url: str, data_dir: Path, state: dict, force: bool = Fa
     finally:
         part.unlink(missing_ok=True)
 
-    state[name] = {**remote, "bytes": size, "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    state[name] = {**remote, "bytes": size, "fetched_at": now, "checked_at": now}
     return "downloaded"
 
 

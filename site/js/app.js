@@ -16,6 +16,11 @@ const RANGES = [
   { id: 'all', label: 'Since 2020', days: null, phrase: 'since 2020' },
 ];
 const MODES = [{ id: 'dots', label: 'Blocks' }, { id: 'heat', label: 'Density' }];
+// How far around one block the page can be narrowed to (see loadArea).
+const RADII = [{ id: '25', label: '¼ mile', miles: 0.25 }, { id: '50', label: '½ mile', miles: 0.5 }];
+const METRES_PER_MILE = 1609.344;
+// The city publishes new reports every morning, so a copy this many days old is missing some.
+const STALE_DAYS = 2;
 const TAGS = {
   violence: 'Violence', vehicle: 'Vehicle', burglary: 'Burglary', theft: 'Theft', harassment: 'Harassment',
   police: 'Police activity', vandalism: 'Vandalism', traffic: 'Traffic', court: 'Court',
@@ -34,12 +39,19 @@ function el(tag, className, text, parent) {
   return node;
 }
 
-const state = { beat: null, range: '365', sev: null, cat: null, mode: 'dots', chatterKind: 'all', chatterShown: 12 };
+// near: { x, y, r } when the page is narrowed to the area around one block: the block's point (as in
+// hood.places) and the id of one of RADII. It is replaced, never changed in place.
+const state = { beat: null, near: null, range: '365', sev: null, cat: null, mode: 'dots', chatterKind: 'all', chatterShown: 12 };
 const data = { meta: null, city: null, beats: null, hoods: new Map(), feeds: new Map() };
 let ctx = null;
 let map = null;
 let hoodInfo = null;      // Map(beat -> entry of meta.hoods)
-const current = { beat: null, drawn: false, hood: null, feed: null, mask: null, range: null };   // what is on screen
+// What is on screen. hood is what the page counts: the neighborhood's own file, or the part of it and
+// its neighbors inside `area` (see loadArea). stories and calls are the unverified items on the map.
+const current = {
+  beat: null, view: null, drawn: false, hood: null, area: null, neighborhood: null, feed: null, stories: [], calls: [],
+  mask: null, range: null,
+};
 
 // ---- loading -------------------------------------------------------------------------------------
 
@@ -65,6 +77,34 @@ async function loadFeed(beat) {
   return data.feeds.get(beat);
 }
 
+// The page narrowed to the area around one block: every record within a distance of the block's
+// point, from each neighborhood the circle reaches, in the shape of a hood (S.within), so the rest
+// of the page reads it as it reads a neighborhood. Only the newest area is kept.
+let lastArea = null;
+
+async function loadArea(near) {
+  const key = `${near.x}.${near.y}.${near.r}`;
+  if (lastArea && lastArea.key === key) return lastArea;
+  const radius = RADII.find((r) => r.id === near.r);
+  const metres = radius.miles * METRES_PER_MILE;
+  const ring = S.ring(near.x, near.y, metres);
+  const lons = ring.map((point) => point[0]);
+  const lats = ring.map((point) => point[1]);
+  const bbox = [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)];
+  // every neighborhood whose bounding box the circle's touches; a few more files than needed, never fewer
+  const beats = data.meta.hoods
+    .filter((h) => h.bbox[0] <= bbox[2] && h.bbox[2] >= bbox[0] && h.bbox[1] <= bbox[3] && h.bbox[3] >= bbox[1])
+    .map((h) => h.beat);
+  const hood = S.within(await Promise.all(beats.map(loadHood)), near.x, near.y, metres);
+  const centre = hood.places.find((p) => p[1] === near.x && p[2] === near.y);
+  lastArea = {
+    key, x: near.x, y: near.y, radius, metres, ring, bbox, beats, hood,
+    label: (centre && centre[0]) || 'this spot',
+    sq_mi: Math.PI * radius.miles ** 2,
+  };
+  return lastArea;
+}
+
 // ---- state <-> URL -------------------------------------------------------------------------------
 
 function parseSet(text, n) {
@@ -77,6 +117,8 @@ function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   const beat = Number(p.get('b'));
   state.beat = hoodInfo.has(beat) ? beat : data.meta.home_beat;
+  const a = /^(-?\d+)\.(-?\d+)\.(\d+)$/.exec(p.get('a') || '');      // x.y.radius
+  state.near = a && RADII.some((r) => r.id === a[3]) ? { x: Number(a[1]), y: Number(a[2]), r: a[3] } : null;
   state.range = RANGES.some((r) => r.id === p.get('r')) ? p.get('r') : '365';
   state.sev = parseSet(p.get('s'), ctx.nSev);
   state.cat = parseSet(p.get('c'), ctx.nCat);
@@ -85,7 +127,9 @@ function readHash() {
 
 function writeHash() {
   const p = new URLSearchParams();
-  if (state.beat !== data.meta.home_beat) p.set('b', state.beat);
+  // An area is read against its own neighborhood, so that one is always named, opening one or not.
+  if (state.beat !== data.meta.home_beat || state.near) p.set('b', state.beat);
+  if (state.near) p.set('a', [state.near.x, state.near.y, state.near.r].join('.'));
   if (state.range !== '365') p.set('r', state.range);
   if (state.sev) p.set('s', [...state.sev].sort().join('.'));
   if (state.cat) p.set('c', [...state.cat].sort().join('.'));
@@ -132,6 +176,22 @@ function delta(parent, cmp, basis = 'than the year before') {
 
 /** The city as a place with residents, in the shape of an entry of meta.hoods (see S.perThousand). */
 const cityPlace = () => ({ residents: data.meta.city_residents, rated: data.meta.city_residents !== null });
+
+/** What the page is counting, in words: a neighborhood, or the area around one block. */
+function subject() {
+  const { name } = hoodInfo.get(state.beat);
+  const { area } = current;
+  return area
+    ? { where: `within ${area.radius.label} of ${area.label}`, short: 'This area' }
+    : { where: `in ${name}`, short: name };
+}
+
+/** Choose a neighborhood. That always means all of it, so an area around a block is let go. */
+function goTo(beat) {
+  state.beat = beat;
+  state.near = null;
+  return update();
+}
 
 function segmented(root, options, selected, onPick) {
   root.replaceChildren();
@@ -197,12 +257,28 @@ function renderHeader() {
         el('option', null, h.name, group).value = h.beat;
       }
     }
-    select.addEventListener('change', () => { state.beat = Number(select.value); update(); });
+    select.addEventListener('change', () => goTo(Number(select.value)));
   }
   select.value = state.beat;
-  const through = S.dayToDate(ctx.today, data.meta.epoch);
-  $('asof').textContent = `SDPD reports approved through ${F.date(through)} · refreshed ${F.ago(new Date(data.meta.built_at))}`;
-  document.title = `${hoodInfo.get(state.beat).name} crime · San Diego`;
+  const { name } = hoodInfo.get(state.beat);
+  const { area } = current;
+  $('area').hidden = !area;
+  if (area) {
+    segmented($('radius'), RADII, area.radius.id, (id) => { state.near = { ...state.near, r: id }; update(); });
+    $('area-of').textContent = `of ${area.label}`;
+    $('area-of').title = `The page is counting reports within ${area.radius.label} of ${area.label}`;
+    $('area-clear').title = `Back to all of ${name}`;
+    $('area-clear').setAttribute('aria-label', `Back to all of ${name}`);
+  }
+  document.title = area ? `Near ${area.label}, ${name} · San Diego crime` : `${name} crime · San Diego`;
+
+  // Only the date the reports run through. The city's files are up to two days behind on the day
+  // it publishes them, so when this copy was made tells a reader nothing until the copy is old
+  // enough that the city has newer ones. Then its age is said.
+  const asof = $('asof');
+  asof.textContent = `SDPD reports approved through ${F.date(S.dayToDate(ctx.today, data.meta.epoch))}`;
+  const age = data.meta.checked_at ? S.daysSince(data.meta.checked_at) : 0;
+  if (age >= STALE_DAYS) el('span', 'stale', ` · downloaded ${age} days ago`, asof);
 }
 
 function toggle(set, i, n) {
@@ -236,35 +312,45 @@ function renderFilters() {
 }
 
 function renderSummary(hood, mask, cmask) {
-  const name = hoodInfo.get(state.beat).name;
+  const home = hoodInfo.get(state.beat);
+  const { area } = current;
   const year = S.compare(hood, mask, ctx, 365);
   const quarter = S.compare(hood, mask, ctx, 90);
   const cityYear = S.compareScope(data.city, 'city', 365, cmask);
+  const homeYear = S.compareScope(data.city, String(state.beat), 365, cmask);     // all of the neighborhood
   const to = F.date(S.dayToDate(year.to, data.meta.epoch));
   const filtered = state.sev || state.cat ? ' (filtered)' : '';
 
-  $('hero-label').textContent = `Reported offenses in ${name}${filtered}, 12 months to ${to}`;
+  $('hero-label').textContent = `Reported offenses ${subject().where}${filtered}, 12 months to ${to}`;
   $('hero-value').textContent = F.int(year.cur);
   delta($('hero-delta'), year, 'than the 12 months before');
-  // The same count per resident, beside the city's rate and this neighborhood's place among all that have one.
-  const home = hoodInfo.get(state.beat);
   const cityRate = S.perThousand(cityYear.cur, cityPlace());
   const rateLine = $('hero-rate');
   rateLine.replaceChildren();
-  rateLine.hidden = home.residents === null;        // the pipeline had no census file
-  const rate = S.perThousand(year.cur, home);
-  if (rate !== null) {
-    const rank = S.standing(rate, data.meta.hoods.map((h) => S.perThousand(S.compareScope(data.city, String(h.beat), 365, cmask).cur, h)));
-    el('strong', null, `${F.rate(rate)} per 1,000 residents`, rateLine);
-    el('span', null, `City as a whole: ${F.rate(cityRate)}. ${F.ordinal(rank.place)} highest of ${rank.of} neighborhoods.`, rateLine);
-  } else if (home.residents !== null) {
-    el('span', null, home.residents >= data.meta.min_residents
-      ? 'No rate per resident: most of the people counted here are in one census block, so the count is too rough.'
-      : `Too few residents (${F.int(home.residents)}) for a rate per resident.`, rateLine);
+  if (area) {
+    // Nobody has counted an area's residents, but its size is known: what the neighborhood's own
+    // count comes to for an area this size is a figure to read the headline against.
+    rateLine.hidden = !home.sq_mi;
+    if (home.sq_mi) {
+      el('span', null, `Across ${home.name}, an area this size averages ${F.int((homeYear.cur / home.sq_mi) * area.sq_mi)}.`, rateLine);
+    }
+  } else {
+    // The same count per resident, beside the city's rate and this neighborhood's place among all that have one.
+    rateLine.hidden = home.residents === null;        // the pipeline had no census file
+    const rate = S.perThousand(year.cur, home);
+    if (rate !== null) {
+      const rank = S.standing(rate, data.meta.hoods.map((h) => S.perThousand(S.compareScope(data.city, String(h.beat), 365, cmask).cur, h)));
+      el('strong', null, `${F.rate(rate)} per 1,000 residents`, rateLine);
+      el('span', null, `City as a whole: ${F.rate(cityRate)}. ${F.ordinal(rank.place)} highest of ${rank.of} neighborhoods.`, rateLine);
+    } else if (home.residents !== null) {
+      el('span', null, home.residents >= data.meta.min_residents
+        ? 'No rate per resident: most of the people counted here are in one census block, so the count is too rough.'
+        : `Too few residents (${F.int(home.residents)}) for a rate per resident.`, rateLine);
+    }
   }
   const perWeek = year.cur / (365 / 7);
   $('hero-note').textContent = `About ${perWeek >= 10 ? F.int(perWeek) : perWeek.toFixed(1)} a week. `
-    + `Comparisons stop ${data.meta.settle_days} days short of today because recent reports are still arriving.`;
+    + `Comparisons stop ${data.meta.settle_days} days before the newest report, because recent reports are still arriving.`;
 
   const tiles = $('tiles');
   tiles.replaceChildren();
@@ -282,16 +368,24 @@ function renderSummary(hood, mask, cmask) {
     'Homicide, rape, robbery, aggravated assault, kidnapping.');
   tile(`Latest 3 months, to ${to}`, F.int(quarter.cur), (p) => delta(p, quarter, 'than the same months a year before'));
   const recent = S.count(hood, mask, ctx.today - 30, ctx.today);
-  tile('Last 30 days, so far', F.int(recent), null,
+  tile(`Newest 30 days, to ${F.date(S.dayToDate(ctx.today, data.meta.epoch))}`, F.int(recent), null,
     'Still filling in. Reports take days to weeks to be approved, so this is not compared with anything yet.');
-  tile(`City of San Diego${filtered}, same 12 months`, F.int(cityYear.cur), (p) => delta(p, cityYear),
-    cityRate === null ? null : `${F.rate(cityRate)} per 1,000 residents.`);
+  // the next size up: the neighborhood for an area, the city for a neighborhood
+  if (area) {
+    const homeRate = S.perThousand(homeYear.cur, home);
+    tile(`All of ${home.name}${filtered}, same 12 months`, F.int(homeYear.cur), (p) => delta(p, homeYear),
+      homeRate === null ? null : `${F.rate(homeRate)} per 1,000 residents.`);
+  } else {
+    tile(`City of San Diego${filtered}, same 12 months`, F.int(cityYear.cur), (p) => delta(p, cityYear),
+      cityRate === null ? null : `${F.rate(cityRate)} per 1,000 residents.`);
+  }
 }
 
 function renderTrend(hood, mask, cmask) {
-  const name = hoodInfo.get(state.beat).name;
+  const { short: name } = subject();
+  const sumSeverities = (bySev) => ctx.months.map((_, m) => bySev.reduce((a, s) => a + s[m], 0));
   const bySev = S.monthly(hood, mask, ctx);
-  const totals = ctx.months.map((_, m) => bySev.reduce((a, s) => a + s[m], 0));
+  const totals = sumSeverities(bySev);
   const last = S.lastFinalMonth(ctx);
   const cityTotals = S.cityMonthly(data.city, cmask, ctx.months.length);
   const outlook = S.outlook(totals, S.seasonalIndex(cityTotals, ctx), ctx);
@@ -349,7 +443,12 @@ function renderTrend(hood, mask, cmask) {
   });
   table($('trend-table'), [{ label: 'Year' }, ...data.meta.severities.map((s) => ({ label: s.label, num: true })), { label: 'Total', num: true }], rows);
 
-  // The neighborhood against the city, both as 12-month running totals indexed to their first value.
+  // Against the next size up (the city for a neighborhood, the neighborhood for an area), both as
+  // 12-month running totals indexed to their first value.
+  const hoodName = hoodInfo.get(state.beat).name;
+  const wider = current.area
+    ? { name: hoodName, words: hoodName, totals: sumSeverities(S.monthly(current.neighborhood, mask, ctx)) }
+    : { name: 'City of San Diego', words: 'the city', totals: cityTotals };
   const running = (series) => series.map((_, i) => {
     if (i < 11 || i > last) return null;
     let sum = 0;
@@ -357,11 +456,11 @@ function renderTrend(hood, mask, cmask) {
     return sum;
   });
   const mine = S.indexTo100(running(totals));
-  const theirs = S.indexTo100(running(cityTotals));
-  $('index-title').textContent = `${name} compared with the city`;
+  const theirs = S.indexTo100(running(wider.totals));
+  $('index-title').textContent = `${name} compared with ${wider.words}`;
   const indexLegend = $('index-legend');
   indexLegend.replaceChildren();
-  for (const [label, color] of [[name, 'var(--accent)'], ['City of San Diego', 'var(--muted)']]) {
+  for (const [label, color] of [[name, 'var(--accent)'], [wider.name, 'var(--muted)']]) {
     const item = el('li', null, null, indexLegend);
     el('span', 'key-line', null, item).style.borderTopColor = color;
     el('span', null, label, item);
@@ -370,12 +469,12 @@ function renderTrend(hood, mask, cmask) {
     months: ctx.months,
     series: [
       { name, color: 'var(--accent)', values: mine, strong: true },
-      { name: 'City of San Diego', color: 'var(--muted)', values: theirs },
+      { name: wider.name, color: 'var(--muted)', values: theirs },
     ],
   });
   const firstYear = ctx.months[0].year;
   $('index-caption').textContent = mine[last] !== null && theirs[last] !== null
-    ? `12-month running totals, with ${firstYear} set to 100. ${name} is now at ${F.int(mine[last])}; the city is at ${F.int(theirs[last])}.`
+    ? `12-month running totals, with ${firstYear} set to 100. ${name} is now at ${F.int(mine[last])}; ${wider.words} is at ${F.int(theirs[last])}.`
     : `12-month running totals, with ${firstYear} set to 100.`;
 }
 
@@ -399,12 +498,23 @@ function incidentList(hood, indices, limit = 40) {
   return list;
 }
 
-// Police dispatch calls for the neighborhood on screen. A call's map point is its block's, so
-// several calls can share one spot; `spot` is that point as "x,y".
+// The unverified items that have a point on the map: the neighborhood's own stories and police
+// calls, or in an area those of every neighborhood it reaches that fall inside it. A story listed
+// under several neighborhoods (one that says "City Heights") is kept once.
+function mapItems(feeds, area) {
+  const inside = (x, y) => !area || S.distance(area.x, area.y, x, y) <= area.metres;
+  const stories = new Map();
+  for (const feed of feeds) {
+    for (const s of feed.stories || []) if (s.where && inside(s.where.x, s.where.y)) stories.set(s.id, s);
+  }
+  const calls = feeds.flatMap((feed) => (feed.dispatch ? feed.dispatch.calls : [])).filter((c) => c.x !== null && inside(c.x, c.y));
+  return { stories: [...stories.values()], calls };
+}
+
+// The police calls on the map in the period. A call's map point is its block's, so several calls
+// can share one spot; `spot` is that point as "x,y".
 function callsInRange(spot) {
-  const { dispatch } = current.feed;
-  if (!dispatch) return [];
-  return dispatch.calls.filter((c) => c.day > current.range.after && (!spot || (c.x !== null && `${c.x},${c.y}` === spot)));
+  return current.calls.filter((c) => c.day > current.range.after && (!spot || `${c.x},${c.y}` === spot));
 }
 
 const callsSince = () => dayLabel(current.feed.dispatch.first, { year: false });
@@ -433,6 +543,14 @@ function openPlace(p, lngLat) {
   const node = el('div');
   el('div', 'pop-title', place[0] || 'Address not given', node);
   el('div', 'pop-sub', `${F.int(indices.length)} ${indices.length === 1 ? 'report' : 'reports'}, ${range.phrase}. Location is the block, not the exact address.`, node);
+  // The way into an area: the page narrows to what is around this block (see loadArea).
+  const { area } = current;
+  if (!area || area.x !== place[1] || area.y !== place[2]) {
+    const radius = area ? area.radius : RADII[0];
+    const around = el('button', 'link pop-around', `See everything within ${radius.label} of this block`, node);
+    around.type = 'button';
+    around.addEventListener('click', () => { state.near = { x: place[1], y: place[2], r: radius.id }; update(); });
+  }
   const reports = node.appendChild(incidentList(hood, indices));
   const calls = callsInRange(`${place[1]},${place[2]}`);
   if (calls.length) {
@@ -454,7 +572,7 @@ function openCalls(spot, lngLat) {
 }
 
 function openStory(id, lngLat) {
-  const story = (current.feed.stories || []).find((s) => s.id === id);
+  const story = current.stories.find((s) => s.id === id);
   if (!story || !map) return;
   const node = el('div');
   el('div', 'pop-sub', `Unverified · ${story.outlet} · ${F.date(new Date(`${story.date}T00:00:00Z`))}`, node);
@@ -462,7 +580,7 @@ function openStory(id, lngLat) {
   a.href = story.url;
   a.target = '_blank';
   a.rel = 'noopener';
-  if (story.where) el('div', 'pop-sub', `Placed at ${story.where.label}, from the wording of the post.`, node);
+  el('div', 'pop-sub', `Placed at ${story.where.label}, from the wording of the post.`, node);
   map.popup(lngLat || [story.where.x / 1e5, story.where.y / 1e5], node);
 }
 
@@ -496,9 +614,9 @@ function renderExplore(hood, mask) {
       properties: { p, n: e.n, w: Math.sqrt(e.n / busiest), sev: e.sev.findIndex((v) => v > 0) },
     });
   }
-  const pins = (current.feed.stories || []).filter((s) => s.where && s.day > range.after && s.day <= range.through);
+  const pins = current.stories.filter((s) => s.day > range.after && s.day <= range.through);
   const spots = new Map();                           // "x,y" -> a police call there
-  for (const c of callsInRange()) if (c.x !== null) spots.set(`${c.x},${c.y}`, c);
+  for (const c of callsInRange()) spots.set(`${c.x},${c.y}`, c);
   if (map) {
     const point = (x, y, properties) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x / 1e5, y / 1e5] }, properties });
     map.setPlaces({ type: 'FeatureCollection', features });
@@ -511,10 +629,21 @@ function renderExplore(hood, mask) {
     });
     map.setMode(state.mode);
   }
-  $('map-note').textContent = total
-    ? `${F.int(mapped)} of ${F.int(total)} reports ${range.phrase} are on the map. `
-      + `${mapped < total ? 'The rest have no usable address. ' : ''}Circles sit on the block, not the exact address. Click one for its reports, or another neighborhood to switch to it.`
-    : 'Nothing in this period matches the filters.';
+  const note = $('map-note');
+  const { area } = current;
+  if (area) {
+    note.textContent = `${plural(total, 'report')} ${range.phrase} within ${area.radius.label} of ${area.label}. `
+      + 'A report counts when its block is inside the circle, so one with no usable address is left out. Click a circle for its reports. ';
+    const back = el('button', 'link', `Show all of ${hoodInfo.get(state.beat).name}`, note);
+    back.type = 'button';
+    back.addEventListener('click', () => goTo(state.beat));
+  } else {
+    note.textContent = total
+      ? `${F.int(mapped)} of ${F.int(total)} reports ${range.phrase} are on the map. `
+        + `${mapped < total ? 'The rest have no usable address. ' : ''}Circles sit on the block, not the exact address. `
+        + 'Click one for its reports and for the area around it, or another neighborhood to switch to it.'
+      : 'Nothing in this period matches the filters.';
+  }
 
   const legend = $('map-legend');
   legend.replaceChildren();
@@ -624,7 +753,7 @@ function renderNearby(cmask) {
     if (h.beat !== state.beat) {
       nameCell = el('button', 'row-button', h.name);
       nameCell.type = 'button';
-      nameCell.addEventListener('click', () => { state.beat = h.beat; update(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+      nameCell.addEventListener('click', () => { goTo(h.beat); window.scrollTo({ top: 0, behavior: 'smooth' }); });
     }
     return {
       sort: cmp.cur,
@@ -653,12 +782,14 @@ function renderNearby(cmask) {
       : 'Busy commercial areas draw more reports than their size suggests; there are no population figures here.');
 }
 
-/** Scroll to a spot on the map and open what is there, widening the period first if it hides the pin. */
+/** Scroll to a spot on the map and open what is there, first widening the period or leaving the area if either hides the pin. */
 async function findOnMap(day, x, y, open) {
-  if (!(day > current.range.after)) {
-    state.range = 'all';
-    await update();
-  }
+  const { area } = current;
+  const tooOld = !(day > current.range.after);
+  const outside = area && S.distance(area.x, area.y, x, y) > area.metres;
+  if (tooOld) state.range = 'all';
+  if (outside) state.near = null;
+  if (tooOld || outside) await update();
   showOnMap([x / 1e5, y / 1e5], open);
 }
 
@@ -763,6 +894,12 @@ function renderMethod() {
     el('p', null, `San Diego Police Department offense reports (FBI NIBRS format) from the City of San Diego open data portal: ${F.int(qa.rows_kept)} records since ${F.date(new Date(`${meta.first_date}T00:00:00Z`))}. `
       + 'They are counted the way SDPD counts them: one per victim for crimes against people, one per incident for property crimes. '
       + 'These are reports, not convictions, and crimes nobody reported are not here.', d);
+    const through = F.date(S.dayToDate(ctx.today, meta.epoch));
+    el('p', null, 'The city rewrites its files every morning, and how far behind they are varies: the newest report in them is sometimes from the night before and sometimes two days old. '
+      + (meta.checked_at
+        ? `This page’s copy was downloaded on ${F.date(F.localDay(new Date(meta.checked_at)))}, and the newest report in it was approved on ${through}. `
+        : `The newest report in this page’s copy was approved on ${through}. `)
+      + 'Approval itself comes days to weeks after an offense, so the most recent weeks are always still filling in.', d);
   });
   block('What is left out', (d) => {
     el('p', null, `${F.int(qa.administrative_excluded)} records (${F.int((100 * qa.administrative_excluded) / qa.rows_kept)}%) are paperwork rather than crime reports: 72-hour mental-health holds, warrant arrests, `
@@ -788,6 +925,13 @@ function renderMethod() {
     el('p', null, `A neighborhood is an SDPD beat. Each record is placed by where its block address falls on the map when the city’s geocoding is confident; otherwise by the beat SDPD recorded. `
       + `SDPD’s label and the address agree ${qa.label_matches_address_pct}% of the time, so totals here differ slightly from SDPD’s own dashboard. `
       + `${qa.mapped_pct}% of offenses can be drawn on the map. Addresses are rounded to the hundred-block, so a circle marks a block, never a building.`, d);
+  });
+  block('The area around one block', (d) => {
+    el('p', null, 'A block’s pop-up on the map can narrow the whole page to a quarter or half mile around that block, across neighborhood lines. '
+      + 'A report counts when the point of its block falls inside the circle, so the edge is only as exact as a block. '
+      + `The ${(100 - qa.mapped_pct).toFixed(1)}% of offenses with no usable address cannot be placed and are left out, so an area’s counts run slightly low beside a neighborhood’s. `
+      + 'Nobody has counted the residents of such an area. In place of a rate per resident, its count is set beside what the neighborhood’s own count comes to for an area that size.', d);
+    el('p', null, 'The unverified posts and police calls on the map are then the ones inside the circle. The list under “What people are saying” stays the whole neighborhood’s.', d);
   });
   if (meta.city_residents !== null) {
     block('Rates per 1,000 residents', (d) => {
@@ -835,11 +979,15 @@ async function update() {
   hideTip();
   map?.closePopup();          // its contents were built for the previous filters
   writeHash();
-  const beat = state.beat;
+  const { beat, near } = state;
   const beatChanged = current.beat !== beat;
-  const [hood, feed] = await Promise.all([loadHood(beat), loadFeed(beat)]);
-  if (beat !== state.beat) return;                 // a newer selection overtook this one
-  current.feed = feed;
+  const [neighborhood, feed, area] = await Promise.all([loadHood(beat), loadFeed(beat), near ? loadArea(near) : null]);
+  const feeds = area ? await Promise.all(area.beats.map(loadFeed)) : [feed];
+  if (beat !== state.beat || near !== state.near) return;      // a newer selection overtook this one
+  const hood = area ? area.hood : neighborhood;
+  const view = area ? area.key : String(beat);                  // what the map is framed on
+  const viewChanged = current.view !== view;
+  Object.assign(current, { feed, area, neighborhood, ...mapItems(feeds, area) });
   if (beatChanged) state.chatterShown = 12;
 
   const mask = S.offenseMask(ctx, state.cat, state.sev);
@@ -849,9 +997,11 @@ async function update() {
   renderSummary(hood, mask, cmask);
   renderTrend(hood, mask, cmask);
   renderExplore(hood, mask);
-  if (map && beatChanged) map.setBeat(beat, hoodInfo.get(beat).bbox, current.drawn);
-  current.beat = beat;
-  current.drawn = true;
+  if (map && viewChanged) {
+    map.setBeat(beat, area ? area.bbox : hoodInfo.get(beat).bbox, current.drawn);
+    map.setArea(area ? area.ring : null);
+  }
+  Object.assign(current, { beat, view, drawn: true });
   renderNearby(cmask);
   renderChatter();
   renderMethod();
@@ -878,7 +1028,7 @@ async function start() {
     beats: data.beats,
     sevColors: SEV_COLORS,
     chatterColor: CHATTER_COLOR,
-    onBeat: (beat) => { state.beat = beat; update(); },
+    onBeat: goTo,
     onPlace: (p, lngLat) => openPlace(p, lngLat),
     onChatter: (id, lngLat) => (id.startsWith('calls:') ? openCalls(id.slice(6), lngLat) : openStory(id, lngLat)),
     onHoverBeat: (name) => {
@@ -888,6 +1038,7 @@ async function start() {
   });
 
   $('reset').addEventListener('click', () => { state.sev = null; state.cat = null; update(); });
+  $('area-clear').addEventListener('click', () => goTo(state.beat));
   $('trend-table-toggle').addEventListener('click', (e) => {
     const box = $('trend-table');
     box.hidden = !box.hidden;

@@ -1,10 +1,10 @@
 # San Diego neighborhood crime dashboard
 
-A dashboard that answers one question about one neighborhood: **how much crime is reported here, how serious is it, and is it getting better or worse?** It opens on North Park and works for any of San Diego's 125 police beats.
+A dashboard that answers one question about one neighborhood: **how much crime is reported here, how serious is it, and is it getting better or worse?** It opens on North Park and works for any of San Diego's 125 police beats, or for the quarter mile around any one block.
 
 ![The dashboard, opened on North Park](docs/dashboard.png)
 
-It is built from the San Diego Police Department's public offense records (January 2020 to yesterday), with an unofficial layer of local news headlines, Reddit posts and recent police dispatch calls on top. Rates per resident use the 2020 Census. There is no server and no database. A Python script turns the city's CSV files into small JSON files, and a plain HTML and JavaScript page reads them.
+It is built from the San Diego Police Department's public offense records (January 2020 to a day or two ago), with an unofficial layer of local news headlines, Reddit posts and recent police dispatch calls on top. Rates per resident use the 2020 Census. There is no server and no database. A Python script turns the city's CSV files into small JSON files, and a plain HTML and JavaScript page reads them.
 
 ## Run it
 
@@ -19,7 +19,7 @@ python -m pipeline refresh          # download, build, collect chatter (about 10
 python -m pipeline serve            # opens http://localhost:8000
 ```
 
-Run `refresh` again whenever you want newer data. The city rewrites its files every morning.
+Run `refresh` again whenever you want newer data. The city rewrites its files every morning, and how far behind they are varies: the file it put out on Tuesday, October 6, 2026 ended with reports approved that Sunday morning, and Wednesday's ended late on Tuesday night. So the top corner of the page gives one date, the day its reports run through. It adds how long ago its copy was downloaded only once that is two days or more, which is when the city is sure to have newer files.
 
 | Command | What it does |
 | --- | --- |
@@ -34,15 +34,16 @@ Any neighborhood can be opened from the menu or by clicking it on the map, and e
 
 ## What is on the page
 
-- **The headline.** Offenses reported in the past 12 months, the change from the 12 months before, and whether that change is more than chance. Under it, the same count per 1,000 residents, with the city's rate and where the neighborhood ranks among the 111 that have one. Four smaller figures sit beside it: high-severity offenses, the latest 3 months, the last 30 days so far, and the city as a whole.
+- **The headline.** Offenses reported in the past 12 months, the change from the 12 months before, and whether that change is more than chance. Under it, the same count per 1,000 residents, with the city's rate and where the neighborhood ranks among the 111 that have one. Four smaller figures sit beside it: high-severity offenses, the latest 3 months, the newest 30 days so far, and the city as a whole.
 - **Monthly trend since 2020**, stacked by severity, with a 12-month average line and a rough outlook for the next three months.
 - **The neighborhood against the city**, both as running 12-month totals indexed to 2020.
 - **Map.** One circle per block, sized by the number of reports and colored by the most serious one. Click a circle for its reports. A density view is one click away.
+- **Around one block.** A block's pop-up has a link that narrows the whole page to a quarter or half mile around that block, across neighborhood lines: the headline, the trend, the map and the lists. Beside the count is what the neighborhood's own count comes to for an area that size, and the trend is drawn against the neighborhood's. Bookmark it to keep the view around your own block.
 - **By type, busiest blocks, latest reports**, all for the period you pick (30 days, 3 months, 12 months, or everything since 2020).
 - **Next-door neighborhoods**, compared on the same footing: offenses, offenses per 1,000 residents and per square mile, and the change.
 - **What people are saying**, for whichever neighborhood is open. News and Reddit posts that name it, grouped so one incident covered by eight outlets shows once. A post that names an intersection or block is pinned on the map. Police dispatch calls from the last 30 days are listed day by day and drawn as small dots on their blocks.
 
-Severity and type filters at the top apply to everything. The filters, period and neighborhood are kept in the URL, so a view can be bookmarked or shared.
+Severity and type filters at the top apply to everything. The filters, period, neighborhood and area are kept in the URL, so a view can be bookmarked or shared.
 
 ## Five decisions behind the numbers
 
@@ -99,7 +100,7 @@ News and Reddit RSS ───chatter─▶ chatter/items.jsonl ─────�
 | `analysis/backtest.py` | The replay behind decision 3 |
 | `tests/` | Python tests, including a full build of a tiny made-up city, and JavaScript tests for the statistics |
 
-The build is rerun from scratch every time, because the city rewrites past years as investigations proceed. It writes to a temporary folder and swaps it in only on success. The page loads about 400 KB of its own files up front, then three files for the neighborhood on screen: its offenses (North Park's is 400 KB), its stories and its police calls.
+The build is rerun from scratch every time, because the city rewrites past years as investigations proceed. It writes to a temporary folder and swaps it in only on success. The page loads about 400 KB of its own files up front, then three files for the neighborhood on screen: its offenses (North Park's is 400 KB), its stories and its police calls. The view around a block loads the same three for each neighborhood its circle comes near, and picks the records inside the circle out of them in the browser.
 
 The only Python dependency is DuckDB. The page uses MapLibre GL from a CDN and CARTO's free Dark Matter basemap, with no build step and no API keys.
 
@@ -124,6 +125,7 @@ The workflow does not collect news or Reddit posts (Reddit turns away requests f
 
 - These are **reports**, not convictions, and crimes nobody reported are not here.
 - Addresses are rounded to the hundred-block. A circle marks a block, never a building.
+- The view around a block counts a report when its block's point falls inside the circle, so its edge is only as exact as a block. About 4% of offenses have no usable address; they cannot be placed and are left out of it, so its counts run slightly low beside a neighborhood's. There is no count of the residents of such an area, so it has no rate per resident.
 - A rate per resident divides everyone's reports by only the people who live there. Where many people come to work, shop, drink or swim (downtown, Mission Valley, Old Town, the beaches) it runs far above anything a resident experiences: East Village comes out at 261 per 1,000 and Old Town at 516, against 41 for North Park. Compare residential neighborhoods with each other, not with those.
 - Residents are counted as of 2020. Where a lot of housing has been built since, more people live there now and the true rate is lower than the one shown.
 - A census block is given whole to the neighborhood its centre falls in, though a few straddle a boundary. Checked once against splitting every block by area, 96 of the 111 neighborhoods with a rate agree within 5% and 104 within 10%. The widest gaps are Loma Portal (19% more residents by this method), Midway District (15% fewer) and Torrey Highlands (14% fewer).
@@ -139,7 +141,7 @@ The workflow does not collect news or Reddit posts (Reddit turns away requests f
 - **Time of day.** The city's live map service has the hour of each offense; joining it in would show when things happen.
 - **More from the dispatch log.** It goes back to 2015 and has the time of every call. Only the last 30 days are used, as a feed; a trend of calls, or calls by hour, would come from the same files.
 - **A better chatter filter.** A small language model could replace the keyword rules for relevance and location.
-- **"Near my block."** Counts within a chosen distance of a point, across neighborhood lines.
+- **Around an address.** The view around a block starts from a block that has a report on the map. Starting from a typed address would take a geocoder.
 - **Better resident counts.** Splitting each census block between neighborhoods by area instead of by its centre, and bringing 2020 up to date with the Census Bureau's yearly estimates.
 
 ## Data and credits

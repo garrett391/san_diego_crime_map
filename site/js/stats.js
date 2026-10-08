@@ -6,6 +6,7 @@
 //   lag[i]   days from the offense to the report being approved
 //   off[i]   index into meta.offenses (which gives category and severity)
 //   place[i] index into hood.places ([label, x, y]), or -1
+//   sec[i]   index into hood.sections (the code sections on the report, as text)
 // A "mask" is a Uint8Array over meta.offenses with 1 for the offense types the filters keep.
 
 const DAY_MS = 86400000;
@@ -16,6 +17,12 @@ export function dayNumber(iso, epochIso) {
 
 export function dayToDate(day, epochIso) {
   return new Date(Date.parse(epochIso + 'T00:00:00Z') + day * DAY_MS);
+}
+
+/** Whole calendar days from a moment (an ISO timestamp) to now, on the reader's own clock. */
+export function daysSince(iso, now = new Date()) {
+  const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  return Math.round((midnight(now) - midnight(new Date(iso))) / DAY_MS);
 }
 
 /** Everything derived from meta.json that the other functions need. */
@@ -312,4 +319,63 @@ export function records(hood, mask, after, through, { place = null, limit = Infi
     if (mask[hood.off[i]] && (place === null || hood.place[i] === place)) out.push(i);
   }
   return out;
+}
+
+// ---- the area around a point ---------------------------------------------------------------------
+// A point is x, y in 1e-5 degrees, as in hood.places. Over a mile or so the ground is flat enough for
+// a fixed number of metres per degree, the same figures pipeline/build.py uses for a beat's area.
+
+const M_PER_Y = 1.1095;                                                   // metres per 1e-5 degree of latitude
+const mPerX = (y) => 1.1132 * Math.cos((y / 1e5) * (Math.PI / 180));      // and of longitude, at latitude y
+
+/** Metres between two points. */
+export function distance(x1, y1, x2, y2) {
+  return Math.hypot((x2 - x1) * mPerX((y1 + y2) / 2), (y2 - y1) * M_PER_Y);
+}
+
+/** The circle of `metres` around a point as a closed ring of [longitude, latitude], for the map. */
+export function ring(x, y, metres, steps = 72) {
+  const out = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = ((i % steps) / steps) * 2 * Math.PI;
+    out.push([(x + (metres * Math.cos(angle)) / mPerX(y)) / 1e5, (y + (metres * Math.sin(angle)) / M_PER_Y) / 1e5]);
+  }
+  return out;
+}
+
+/**
+ * The records within `metres` of a point, from every hood the circle reaches, as one hood: the same
+ * parallel arrays, sorted by day, so each function above reads an area as it reads a neighborhood.
+ * A record is inside when its block's point is. One with no point cannot be placed and is left out.
+ */
+export function within(hoods, x, y, metres) {
+  const places = [];
+  const sections = [];
+  const placeAt = new Map();        // "x,y" -> index in places; a block on a boundary is in two hoods
+  const sectionAt = new Map();
+  const rows = [];
+  for (const hood of hoods) {
+    const moved = hood.places.map(([label, px, py]) => {
+      if (px === null || distance(x, y, px, py) > metres) return -1;
+      const key = `${px},${py}`;
+      if (!placeAt.has(key)) {
+        placeAt.set(key, places.length);
+        places.push([label, px, py]);
+      }
+      return placeAt.get(key);
+    });
+    for (let i = 0; i < hood.day.length; i++) {
+      const place = hood.place[i] < 0 ? -1 : moved[hood.place[i]];
+      if (place < 0) continue;
+      const text = hood.sections[hood.sec[i]];
+      if (!sectionAt.has(text)) {
+        sectionAt.set(text, sections.length);
+        sections.push(text);
+      }
+      rows.push([hood.day[i], hood.lag[i], hood.off[i], place, sectionAt.get(text)]);
+    }
+  }
+  rows.sort((a, b) => a[0] - b[0]);
+  const column = (k) => rows.map((r) => r[k]);
+  return { places, sections, day: column(0), lag: column(1), off: column(2), place: column(3), sec: column(4) };
 }

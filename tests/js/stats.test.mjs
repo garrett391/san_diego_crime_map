@@ -218,6 +218,76 @@ test('placeCounts, countByCategory, countByOffense and records', () => {
   assert.equal(S.records(h, all, -1, ctx.today, { place: 0 }).length, 3);
 });
 
+test('daysSince counts calendar days on the reader’s clock, not 24-hour stretches', () => {
+  const downloaded = new Date(2026, 9, 6, 17, 58).toISOString();             // 5:58 pm on Oct 6, local time
+  assert.equal(S.daysSince(downloaded, new Date(2026, 9, 6, 23, 59)), 0);
+  assert.equal(S.daysSince(downloaded, new Date(2026, 9, 7, 0, 5)), 1);       // six hours on, but the next day
+  assert.equal(S.daysSince(downloaded, new Date(2026, 9, 7, 23, 0)), 1);      // 29 hours on, still the next day
+  assert.equal(S.daysSince(downloaded, new Date(2026, 9, 17, 9, 0)), 11);
+  assert.equal(S.daysSince(new Date(2026, 2, 7, 12).toISOString(), new Date(2026, 2, 9, 12)), 2);   // across a 23-hour day
+});
+
+// A point every 100 m going north from a corner in North Park, in the 1e-5 degrees of hood.places.
+const CORNER = [-11713000, 3274850];
+const north = (metres) => [CORNER[0], CORNER[1] + Math.round(metres / 1.1095)];
+
+test('distance and ring: metres on the ground from points in degrees', () => {
+  const [x, y] = CORNER;
+  assert.ok(Math.abs(S.distance(x, y, ...north(400)) - 400) < 1);
+  // a degree of longitude is shorter than one of latitude here: cos(32.7485 degrees) = 0.841
+  assert.ok(Math.abs(S.distance(x, y, x + 1000, y) - 936.2) < 0.5);
+  assert.equal(S.distance(x, y, x, y), 0);
+
+  const ring = S.ring(x, y, 402, 72);
+  assert.equal(ring.length, 73);
+  assert.deepEqual(ring[0], ring[72]);                                         // closed
+  for (const [lon, lat] of ring) assert.ok(Math.abs(S.distance(x, y, lon * 1e5, lat * 1e5) - 402) < 0.5);
+  assert.ok(ring[0][0] > x / 1e5 && Math.abs(ring[0][1] - y / 1e5) < 1e-9);    // starts due east
+  assert.ok(Math.abs(ring[18][0] - x / 1e5) < 1e-9 && ring[18][1] > y / 1e5);  // a quarter turn on, due north
+});
+
+test('within: the records around a point, from more than one hood, as one hood', () => {
+  const quarterMile = 0.25 * 1609.344;                                         // 402.3 m
+  // One neighborhood holds the corner and the blocks north of it; the next one starts 200 m south.
+  const here = {
+    places: [['Corner', ...CORNER], ['400 m north', ...north(400)], ['405 m north', ...north(405)], ['No address', null, null]],
+    sections: ['484 PC THEFT', '459 PC BURGLARY'],
+    day: [day('2021-03-01'), day('2022-01-05'), day('2022-01-06'), day('2022-01-07'), day('2022-01-08')],
+    lag: [1, 2, 3, 4, 5], off: [1, 0, 1, 2, 1], sec: [0, 1, 0, 1, 0],
+    place: [0, 1, 2, 3, -1],                    // the corner, 400 m, 405 m, a place with no point, no place at all
+  };
+  const next = {
+    places: [['200 m south', ...north(-200)], ['Corner, as the next neighborhood has it', ...CORNER], ['Far away', ...north(-900)]],
+    sections: ['594 PC VANDALISM', '484 PC THEFT'],
+    day: [day('2020-06-01'), day('2022-01-06'), day('2022-02-01')],
+    lag: [9, 8, 7], off: [2, 2, 0], sec: [0, 1, 0],
+    place: [0, 1, 2],
+  };
+  const area = S.within([here, next], ...CORNER, quarterMile);
+
+  // 400 m is inside a quarter mile and 405 m is not; the corner is one place though two files have it
+  assert.deepEqual(area.places.map((p) => p[0]), ['Corner', '400 m north', '200 m south']);
+  assert.deepEqual(area.day, [day('2020-06-01'), day('2021-03-01'), day('2022-01-05'), day('2022-01-06')]);
+  assert.deepEqual(area.lag, [9, 1, 2, 8]);
+  assert.deepEqual(area.off, [2, 1, 0, 2]);
+  assert.deepEqual(area.place, [2, 0, 1, 0]);
+  assert.deepEqual(area.place.map((p) => area.places[p][0]), ['200 m south', 'Corner', '400 m north', 'Corner']);
+  assert.deepEqual(area.sec.map((s) => area.sections[s]), ['594 PC VANDALISM', '484 PC THEFT', '459 PC BURGLARY', '484 PC THEFT']);
+
+  // it is a hood like any other: the counting functions read it unchanged
+  const ctx = S.context(meta());
+  const all = S.offenseMask(ctx, null, null);
+  assert.equal(S.count(area, all, -1, ctx.today), 4);
+  assert.equal(S.count(area, S.offenseMask(ctx, null, new Set([0])), -1, ctx.today), 1);
+  assert.deepEqual(S.placeCounts(area, all, ctx, -1, ctx.today).get(0), { n: 2, sev: [0, 1, 1] });
+  assert.equal(S.records(area, all, -1, ctx.today, { limit: 1 })[0], 3);
+
+  // a wider circle takes in the block 405 m north, and nothing at all is an empty hood
+  assert.equal(S.within([here, next], ...CORNER, 2 * quarterMile).day.length, 5);
+  assert.deepEqual(S.within([here, next], CORNER[0] + 500000, CORNER[1], quarterMile),
+    { places: [], sections: [], day: [], lag: [], off: [], place: [], sec: [] });
+});
+
 // When the pipeline has been run, the browser and the pipeline must agree on every comparison.
 const built = path.join(root, 'site/data/meta.json');
 test('the browser reproduces the pipeline’s year-over-year counts', { skip: !existsSync(built) && 'run `python -m pipeline build` first' }, () => {

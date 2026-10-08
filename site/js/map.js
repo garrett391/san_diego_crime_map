@@ -1,5 +1,6 @@
 // The map: neighborhood outlines, one circle per hundred-block (sized by reports, colored by the
-// most serious one), an optional density view, and unverified chatter pins and police-call dots.
+// most serious one), an optional density view, unverified chatter pins and police-call dots, and
+// the edge of the area around a block when the page is narrowed to one.
 // MapLibre GL comes from a <script> tag in index.html; the basemap is CARTO's free Dark Matter style.
 
 const BASEMAP = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
@@ -27,6 +28,14 @@ export function createMap(container, { beats, sevColors, chatterColor, onBeat, o
   let hovered = null;
   let popup = null;
 
+  // A pop-up too tall to sit above its spot opens below it, and from the middle of the map that
+  // runs off the bottom edge. Slide the map up by what is cut off.
+  const fitPopup = () => {
+    if (!popup || !popup.isOpen()) return;
+    const cut = popup.getElement().getBoundingClientRect().bottom - container.getBoundingClientRect().bottom + 10;
+    if (cut > 0) map.panBy([0, cut], { duration: 250 });
+  };
+
   const ready = new Promise((resolve) => {
     map.on('load', () => {
       // Draw under the basemap's labels so street names stay readable on top of the circles.
@@ -49,6 +58,13 @@ export function createMap(container, { beats, sevColors, chatterColor, onBeat, o
           'line-color': ['case', ['boolean', ['feature-state', 'selected'], false], '#ffffff', 'rgba(255,255,255,0.28)'],
           'line-width': ['case', ['boolean', ['feature-state', 'selected'], false], 2, 0.75],
         },
+      }, under);
+
+      // The edge of the area around one block, when the page is narrowed to one.
+      map.addSource('area', { type: 'geojson', data: EMPTY });
+      map.addLayer({
+        id: 'area', type: 'line', source: 'area',
+        paint: { 'line-color': '#ffffff', 'line-width': 1.5, 'line-dasharray': [3, 3] },
       }, under);
 
       map.addSource('places', { type: 'geojson', data: EMPTY });
@@ -133,6 +149,11 @@ export function createMap(container, { beats, sevColors, chatterColor, onBeat, o
         map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 28, duration: animate ? 700 : 0 });
       });
     },
+    /** ring: the area's edge as [[longitude, latitude], ...], or null for none. */
+    setArea(ring) {
+      const edge = ring ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: ring } } : EMPTY;
+      ready.then(() => map.getSource('area').setData(edge));
+    },
     setPlaces(collection) { ready.then(() => map.getSource('places').setData(collection)); },
     setChatter(collection) { ready.then(() => map.getSource('chatter').setData(collection)); },
     setMode(mode) {
@@ -144,8 +165,14 @@ export function createMap(container, { beats, sevColors, chatterColor, onBeat, o
     popup(lngLat, node) {
       popup?.remove();
       popup = new maplibregl.Popup({ maxWidth: '320px', offset: 10 }).setLngLat(lngLat).setDOMContent(node).addTo(map);
+      if (!map.isMoving()) fitPopup();
     },
     closePopup() { popup?.remove(); },
-    flyTo(lngLat) { ready.then(() => map.easeTo({ center: lngLat, zoom: Math.max(map.getZoom(), 15.5), duration: 600 })); },
+    flyTo(lngLat) {
+      ready.then(() => {
+        map.easeTo({ center: lngLat, zoom: Math.max(map.getZoom(), 15.5), duration: 600 });
+        map.once('moveend', fitPopup);      // the pop-up for the spot is opened as the map sets off
+      });
+    },
   };
 }

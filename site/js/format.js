@@ -40,10 +40,7 @@ export function month(year, monthIndex, { long = false } = {}) {
   return `${(long ? MONTHS_LONG : MONTHS)[monthIndex]} ${year}`;
 }
 
-/** "3 days ago", "today", for the freshness line. */
-export function ago(then, now = new Date()) {
-  const days = Math.floor((now - then) / 86400000);
-  if (days <= 0) return 'today';
-  if (days === 1) return 'yesterday';
-  return `${days} days ago`;
+/** The calendar day a moment falls on by the reader's own clock, in the form date() takes. */
+export function localDay(moment) {
+  return new Date(Date.UTC(moment.getFullYear(), moment.getMonth(), moment.getDate()));
 }

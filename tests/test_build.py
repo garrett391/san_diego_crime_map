@@ -121,6 +121,7 @@ def built(tmp_path_factory):
 def test_basics(built):
     meta = built["meta"]
     assert meta["data_through"] == "2026-06-30"
+    assert meta["checked_at"] is None             # the tiny city's files were not downloaded by `fetch`
     assert meta["settle_days"] == b.SETTLE_DAYS and meta["windows"] == list(b.WINDOWS)
     assert meta["qa"]["rows_read"] == 15
     assert meta["qa"]["rows_kept"] == 13          # one unreadable date, one duplicate id
@@ -232,6 +233,27 @@ def test_beat_name_prefers_the_code_list():
     assert b.beat_name("Kearny Mesa", "KEARNEY MESA", 313) == "Kearny Mesa"
     assert b.beat_name(None, "NORTH PARK", 813) == "North Park"
     assert b.beat_name(None, " ", 511) == "Beat 511"
+
+
+def test_last_checked_goes_by_the_newest_years_file(tmp_path: Path):
+    for year in (2025, 2026):
+        (tmp_path / f"pd_nibrs_{year}_datasd.csv").write_text("", encoding="utf-8")
+    state = tmp_path / ".fetch_state.json"
+    assert b.last_checked(tmp_path) is None                       # `fetch` never ran here: the files were saved by hand
+
+    state.write_text(json.dumps({
+        "pd_nibrs_2025_datasd.csv": {"fetched_at": "2026-10-06T15:00:00+00:00", "checked_at": "2026-10-06T15:00:00+00:00"},
+        # downloaded on the 1st, and found unchanged at the city on the 4th
+        "pd_nibrs_2026_datasd.csv": {"fetched_at": "2026-10-01T15:00:00+00:00", "checked_at": "2026-10-04T15:00:00+00:00"},
+    }), encoding="utf-8")
+    assert b.last_checked(tmp_path) == "2026-10-04T15:00:00+00:00"
+
+    # a record from before checks were kept has only the download time
+    state.write_text(json.dumps({"pd_nibrs_2026_datasd.csv": {"fetched_at": "2026-10-01T15:00:00+00:00"}}), encoding="utf-8")
+    assert b.last_checked(tmp_path) == "2026-10-01T15:00:00+00:00"
+    state.write_text(json.dumps({"pd_nibrs_2025_datasd.csv": {"checked_at": "2026-10-06T15:00:00+00:00"}}), encoding="utf-8")
+    assert b.last_checked(tmp_path) is None
+    assert b.last_checked(tmp_path / "nowhere") is None
 
 
 def test_missing_data_is_a_clear_error(tmp_path: Path):

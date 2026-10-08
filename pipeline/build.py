@@ -263,6 +263,20 @@ def finalize(con: duckdb.DuckDBPyConnection) -> date:
     return through
 
 
+def last_checked(data_dir: Path) -> str | None:
+    """When the copy in ./data was last known to match the city's, or None if `fetch` never ran here.
+
+    The city publishes new reports every morning, so the dashboard says how old its copy is once
+    it is days old. It goes by the newest year's file, the one new reports land in, and by the
+    last check rather than the last download: a file the city has not changed is still current."""
+    files = sorted(p.name for p in data_dir.glob(NIBRS_GLOB))
+    try:
+        entry = json.loads((data_dir / ".fetch_state.json").read_text(encoding="utf-8")).get(files[-1], {})
+    except (FileNotFoundError, json.JSONDecodeError, IndexError):
+        return None
+    return entry.get("checked_at") or entry.get("fetched_at")      # fetched_at: a record from before checks were kept
+
+
 # ----------------------------------------------------------------------------------------------
 # export
 # ----------------------------------------------------------------------------------------------
@@ -465,16 +479,10 @@ def build(data_dir: Path = config.DATA_DIR, out_dir: Path = config.OUT_DIR,
     _write(tmp / "city.json", {**city_monthly(con, through), "compare": comparison_table(con, through)})
 
     first_day = con.execute("SELECT min(occurred) FROM final").fetchone()[0]
-    fetch_state = {}
-    try:
-        fetch_state = json.loads((data_dir / ".fetch_state.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    fetched = sorted(v["fetched_at"] for k, v in fetch_state.items() if k.startswith("pd_nibrs") and v.get("fetched_at"))
 
     meta = {
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "fetched_at": fetched[-1] if fetched else None,
+        "checked_at": last_checked(data_dir),
         "data_through": through.isoformat(),
         "first_date": first_day.isoformat(),
         "epoch": EPOCH.isoformat(),
