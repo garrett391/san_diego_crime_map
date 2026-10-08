@@ -43,7 +43,7 @@ Any neighborhood can be opened from the menu or by clicking it on the map, and e
 - **Next-door neighborhoods**, compared on the same footing: offenses, offenses per 1,000 residents and per square mile, and the change.
 - **What people are saying**, for whichever neighborhood is open. News and Reddit posts that name it, grouped so one incident covered by eight outlets shows once. A post that names an intersection or block is pinned on the map. Police dispatch calls from the last 30 days are listed day by day and drawn as small dots on their blocks.
 
-Severity and type filters at the top apply to everything. The filters, period, neighborhood and area are kept in the URL, so a view can be bookmarked or shared.
+Severity and type filters at the top apply to everything. The filters, period, neighborhood and area are kept in the URL, so a view can be bookmarked or shared. The browser's Back button returns to the neighborhood or area you were looking at before; changing a filter or the period does not add a step to go back through.
 
 ## Five decisions behind the numbers
 

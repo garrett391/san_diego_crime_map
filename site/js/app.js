@@ -113,6 +113,13 @@ function parseSet(text, n) {
   return set.size === 0 || set.size === n ? null : set;
 }
 
+// Where the page is: the neighborhood, and the block an area is drawn around. Going somewhere else
+// is a new step in the browser's history, so Back returns to where the reader was (a stray click on
+// the map switches neighborhoods). The period, the filters, the map style and an area's distance
+// are settings of a place, and changing one rewrites its step instead of adding another.
+const whereKey = () => `${state.beat}|${state.near ? `${state.near.x}.${state.near.y}` : ''}`;
+let urlPlace = null;      // the place the address bar names
+
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   const beat = Number(p.get('b'));
@@ -123,6 +130,7 @@ function readHash() {
   state.sev = parseSet(p.get('s'), ctx.nSev);
   state.cat = parseSet(p.get('c'), ctx.nCat);
   state.mode = p.get('m') === 'heat' ? 'heat' : 'dots';
+  urlPlace = whereKey();
 }
 
 function writeHash() {
@@ -135,7 +143,9 @@ function writeHash() {
   if (state.cat) p.set('c', [...state.cat].sort().join('.'));
   if (state.mode !== 'dots') p.set('m', state.mode);
   const hash = p.toString();
-  history.replaceState(null, '', hash ? `#${hash}` : location.pathname + location.search);
+  const moved = whereKey() !== urlPlace;
+  urlPlace = whereKey();
+  history[moved ? 'pushState' : 'replaceState'](null, '', hash ? `#${hash}` : location.pathname + location.search);
 }
 
 // ---- small building blocks -----------------------------------------------------------------------
